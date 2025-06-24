@@ -1,38 +1,163 @@
 name: Kernel Build
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering from the GitHub UI
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch full history if needed by kernel scripts (e.g., for git describe)
 
-    - name: Mark workspace as safe directory # Added this step
-      run: |
-        git config --global --add safe.directory /github/workspace
+      - name: Mark workspace as safe directory
+        # This resolves Git's "dubious ownership" warning/error.
+        run: |
+          git config --global --add safe.directory /github/workspace
 
-    - name: Set up MemKernel as a module (M-OUT) with specified name
-      run: |
-        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M
+      - name: Install build dependencies
+        run: |
+          echo "Updating apt packages and installing build dependencies..."
+          sudo apt-get update -y
+          sudo apt install -y --no-install-recommends \
+            flex \
+            bison \
+            libssl-dev \
+            libncurses5-dev \
+            xz-utils \
+            gperf \
+            build-essential \
+            git \
+            curl \
+            zip \
+            unzip \
+            bc \
+            kmod \
+            python3 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            aria2 \
+            mkbootimg \
+            cpio \
+            device-tree-compiler \
+            git-lfs # Ensure all common build dependencies are installed
 
-    - name: Android kernel build
-      uses: lemniskett/android-kernel-actions@master
-      id: build
-      env:
-        NAME: Loganysl
-      with:
-        arch: arm64
-        compiler: clang/15
-        defconfig: floral_defconfig
-        image: Image.gz-dtb
+      - name: Set up AOSP Clang toolchain (clang-r536225)
+        # This is the "alternative" method: manually download, extract,
+        # and configure the AOSP Clang toolchain.
+        run: |
+          TOOLCHAIN_DIR=$HOME/toolchain
+          mkdir -p "$TOOLCHAIN_DIR"
 
-    - name: Upload Kernel and Module
-      uses: actions/upload-artifact@v4
-      with:
-        name: module
-        path: |
-          ${{ steps.build.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko
+          echo "Downloading AOSP Clang toolchain (clang-r536225) from official source..."
+          CLANG_TAR_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz"
+          CLANG_TAR_FILE="clang-r536225.tar.gz"
+          aria2c -j$(nproc --all) "$CLANG_TAR_URL" -o "$CLANG_TAR_FILE"
+
+          echo "Extracting Clang toolchain to $TOOLCHAIN_DIR/aosp-clang..."
+          mkdir -p "$TOOLCHAIN_DIR/aosp-clang"
+          # --strip-components=1 ensures the 'bin', 'lib', etc. folders are directly
+          # inside 'aosp-clang', matching typical toolchain layouts.
+          tar -xzvf "$CLANG_TAR_FILE" -C "$TOOLCHAIN_DIR/aosp-clang" --strip-components=1
+
+          echo "Exporting environment variables for the kernel build system..."
+          # These variables are essential for the kernel build system to find the compiler and tools.
+          # They are set as GITHUB_ENV so they persist across subsequent steps.
+          echo "CLANG_PATH=$TOOLCHAIN_DIR/aosp-clang/bin" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN_DIR/aosp-clang/bin:$PATH" >> $GITHUB_ENV # Add Clang's bin directory to PATH
+          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV # Standard AOSP ARM64 cross-compile prefix
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV # For 32-bit if needed by the kernel
+          echo "LD_LIBRARY_PATH=$TOOLCHAIN_DIR/aosp-clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+          # Explicitly set CC, AR, NM, etc. to use the Clang-based LLVM tools.
+          echo "CC=$TOOLCHAIN_DIR/aosp-clang/bin/clang" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN_DIR/aosp-clang/bin/llvm-ar" >> $GITHUB_ENV
+          echo "NM=$TOOLCHAIN_DIR/aosp-clang/bin/llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=$TOOLCHAIN_DIR/aosp-clang/bin/llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=$TOOLCHAIN_DIR/aosp-clang/bin/llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN_DIR/aosp-clang/bin/llvm-strip" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV # Common triple for ARM64 Clang builds
+
+          # Verify the Clang version to confirm successful setup (useful for debugging).
+          echo "Verifying Clang version:"
+          "$TOOLCHAIN_DIR/aosp-clang/bin/clang" --version
+
+      - name: Set up MemKernel as a module (M-OUT)
+        # This step integrates the MemKernel setup script.
+        run: |
+          echo "Running MemKernel setup script..."
+          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M
+
+      - name: Setup AnyKernel3
+        # AnyKernel3 is used for packaging the compiled kernel into a flashable zip.
+        run: |
+          echo "Cloning AnyKernel3 repository..."
+          git clone https://github.com/osm0sis/AnyKernel3
+          # Modify AnyKernel3 script for broader device compatibility
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          # Clean up AnyKernel3 unnecessary Git history and README.
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md
+
+      - name: Get Build Time
+        id: get_time # Assign an ID to this step to reference its outputs later.
+        run: |
+          # Get current timestamp in UTC+3 for unique artifact naming.
+          echo "TIME=$(TZ=UTC+3 date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Build Kernel
+        # This step performs the actual kernel compilation using standard 'make' commands.
+        # It relies on the environment variables set in the 'Set up AOSP Clang toolchain' step.
+        env:
+          ARCH: arm64 # Target architecture for Pixel 4
+          SUBARCH: arm64
+          DEFCONFIG: floral_defconfig # Crucial: This must be the correct defconfig for your Pixel 4 kernel source.
+          IMAGE: Image.gz-dtb # The desired name of the output kernel image.
+          NAME: Loganysl # A custom name for your build.
+        run: |
+          echo "Creating kernel output directory 'out'..."
+          mkdir -p out
+
+          echo "Cleaning previous kernel build artifacts in 'out' directory..."
+          make O=out clean mrproper || true # '|| true' prevents failure if no previous build exists.
+
+          echo "Applying kernel defconfig: ${DEFCONFIG}..."
+          # The 'make' command uses the CC, CROSS_COMPILE etc. variables already exported to GITHUB_ENV.
+          make O=out ${DEFCONFIG}
+
+          echo "Building kernel image: ${IMAGE} and modules (using all available cores)..."
+          # -j$(nproc --all) uses all available processor cores for faster compilation.
+          make O=out -j$(nproc --all) ${IMAGE}
+
+          echo "Copying compiled kernel image to AnyKernel3 directory for packaging..."
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+
+          # Optional: If MemKernel generates a .ko module and it's not automatically built
+          # by the main kernel target, you might need to uncomment and use a separate 'make modules' here.
+          # Example: make O=out -j$(nproc --all) modules
+
+      - name: Verify Build Artifacts
+        # Check for the existence of the expected build outputs.
+        run: |
+          echo "Verifying Image.gz-dtb in AnyKernel3 directory:"
+          ls -lh AnyKernel3/Image.gz-dtb || echo "Error: Image.gz-dtb not found in AnyKernel3! Build might have failed or path is wrong."
+
+          echo "Verifying MemKernel module (vinn_memk.ko):"
+          # Confirm the exact path to the MemKernel module.
+          ls -lh out/drivers/memkernel/vinn_memk.ko || echo "Error: vinn_memk.ko not found! Check MemKernel setup or kernel config."
+
+      - name: Upload Flashable Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nyan_kernel-Flashable-${{ steps.get_time.outputs.TIME }} # Unique artifact name with timestamp
+          path: "AnyKernel3/*" # Upload the entire contents of AnyKernel3 as a single artifact (ZIP).
+
+      - name: Upload MemKernel Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: memodule # Name of the artifact
+          path: "./out/drivers/memkernel/vinn_memk.ko" # Path to the compiled MemKernel module.

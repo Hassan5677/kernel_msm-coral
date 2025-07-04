@@ -37,11 +37,12 @@ jobs:
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
-        # Disable VDSO32
-        make O=out ARCH=arm64 menuconfig
-        # Alternatively, you can set the config directly
+        # Disable VDSO32, compatibility, and module signature verification directly in .config
         echo "CONFIG_VDSO32=n" >> out/.config
-        echo "CONFIG_COMPAT=n" >> out/.config  # Disable compatibility for 32-bit
+        echo "CONFIG_COMPAT=n" >> out/.config
+        echo "CONFIG_MODULE_SIG=n" >> out/.config
+        # Ensure the configuration is updated
+        make O=out ARCH=arm64 olddefconfig
 
     - name: Build Kernel (Force ld.lld, Avoid gold)
       run: |

@@ -24,7 +24,8 @@ jobs:
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev \
             build-essential curl git \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-gold
 
       - name: Download & Extract Clang (r416183b)
         run: |
@@ -38,10 +39,10 @@ jobs:
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Disable LTO and Enable LD_IS_LLD
+      - name: Disable LTO & Use GNU ld
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
-          scripts/config --file out/.config -d LTO -d THINLTO -e LD_IS_LLD
+          scripts/config --file out/.config -d LTO -d THINLTO -d LD_IS_LLD
           make O=out ARCH=arm64 olddefconfig
 
       - name: Compile Kernel
@@ -50,7 +51,6 @@ jobs:
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=clang \
-            LD=ld.lld \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-

@@ -38,10 +38,10 @@ jobs:
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Disable LTO in .config
+      - name: Disable LTO and Enable LD_IS_LLD
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
-          scripts/config --file out/.config -d LTO -d THINLTO
+          scripts/config --file out/.config -d LTO -d THINLTO -e LD_IS_LLD
           make O=out ARCH=arm64 olddefconfig
 
       - name: Compile Kernel
@@ -50,6 +50,7 @@ jobs:
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=clang \
+            LD=ld.lld \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-

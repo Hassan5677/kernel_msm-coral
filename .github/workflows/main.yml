@@ -21,14 +21,14 @@ jobs:
           libncurses5-dev libssl-dev libelf-dev lzop python3 unzip zip \
           gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
           binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-          llvm lld
+          wget
 
     - name: Download Clang Toolchain
       run: |
         mkdir -p toolchains
-        wget https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
-        tar -xf clang-r416183b.tar.gz -C toolchains
-        echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r416183b/bin" >> $GITHUB_ENV
+        wget https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
+        tar -xf clang-r383902b.tar.gz -C toolchains
+        echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r383902b/bin" >> $GITHUB_ENV
 
     - name: Setup Output Directory
       run: mkdir -p out

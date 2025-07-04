@@ -1,72 +1,53 @@
-name: Build Pixel 4 Kernel
+name: Build Pixel 4 Kernel (Floral)
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    name: Kernel Build
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v3
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v3
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex libssl-dev \
-            libelf-dev build-essential \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu \
-            binutils-arm-linux-gnueabi \
-            lld llvm
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential ccache curl flex git \
+          libncurses5-dev libssl-dev libelf-dev lzop python3 unzip zip \
+          gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
+          libstdc++6 python-is-python3
 
-      - name: Download clang toolchain
-        run: |
-          mkdir -p toolchains
-          curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
-          tar -xzf clang.tar.gz -C toolchains --strip-components=1
+    - name: Download Clang Toolchain
+      run: |
+        mkdir -p toolchains
+        wget https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
+        tar -xf clang-r416183b.tar.gz -C toolchains
+        echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r416183b/bin" >> $GITHUB_ENV
 
-      - name: Export toolchain paths
-        run: |
-          echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/bin" >> $GITHUB_ENV
+    - name: Setup Output Directory
+      run: mkdir -p out
 
-      - name: Configure kernel
-        run: |
-          export PATH=$TOOLCHAIN_PATH:$PATH
-          make O=out ARCH=arm64 coral_defconfig
+    - name: Kernel Config (floral_defconfig)
+      run: |
+        export PATH=$TOOLCHAIN_PATH:$PATH
+        make O=out ARCH=arm64 floral_defconfig
 
-      - name: Build kernel with proper assembler
-        run: |
-          export PATH=$TOOLCHAIN_PATH:$PATH
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            AS=llvm-as \
-            AS32=arm-linux-gnueabi-as \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CFLAGS_vgettimeofday.o="-no-integrated-as" \
-            CFLAGS_sigreturn.o="-no-integrated-as"
+    - name: Build Kernel
+      run: |
+        export PATH=$TOOLCHAIN_PATH:$PATH
+        make -j$(nproc) O=out ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CC=clang
 
-      - name: Save artifacts
-        run: |
-          mkdir -p outdir
-          cp out/arch/arm64/boot/Image.lz4-dtb outdir/ || true
-          cp out/arch/arm64/boot/dtbo.img outdir/ || true
-
-      - name: Upload build output
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-output
-          path: outdir
-          
+    - name: Upload Kernel Image
+      uses: actions/upload-artifact@v3
+      with:
+        name: zImage
+        path: out/arch/arm64/boot/Image.gz-dtb
+        

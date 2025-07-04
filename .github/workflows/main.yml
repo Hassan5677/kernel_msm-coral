@@ -37,6 +37,8 @@ jobs:
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
+        # Disable VDSO32
+        echo "CONFIG_VDSO32=n" >> out/.config
 
     - name: Build Kernel (Force ld.lld, Avoid gold)
       run: |
@@ -44,8 +46,7 @@ jobs:
         make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-          VDSO32=0  # Disable VDSO32 to avoid the error
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
 
     - name: Upload Image.gz-dtb
       uses: actions/upload-artifact@v4

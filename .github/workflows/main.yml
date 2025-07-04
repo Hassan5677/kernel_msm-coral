@@ -8,24 +8,29 @@ on:
 
 env:
   # --- CUSTOMIZE THESE VARIABLES ---
-  KERNEL_DIR: kernel/google/msm-4.14 # Path to your kernel source within the repo (e.g., 'kernel/google/msm-4.14')
-  FLORAL_DEFCONFIG_PATH: floral_defconfig # Path to your floral_defconfig within the repo (e.g., 'floral_defconfig' if at root)
+  # KERNEL_DIR should now point to your 'kernel/msm-coral' directory
+  KERNEL_DIR: kernel/msm-coral # THIS IS THE CRUCIAL CHANGE
+  
+  # floral_defconfig is already within the KERNEL_DIR at arch/arm64/configs/
+  # So, we don't need to 'copy' it from an external path anymore.
+  # We will just ensure the defconfig command targets it correctly.
+  # You can remove FLORAL_DEFCONFIG_PATH if you want, but I'll keep it for clarity.
+  FLORAL_DEFCONFIG_PATH: arch/arm64/configs/floral_defconfig 
   # --- END CUSTOMIZATION ---
 
   ARCH: arm64
   SUBARCH: arm64
-  # NDK will set up the correct cross-compile prefix automatically
-  MAKEFLAGS: -j$(nproc) # Use all available CPU cores for compilation
+  MAKEFLAGS: -j$(nproc)
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Good default. ubuntu-22.04 also works.
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        submodules: true # Important if your kernel source uses git submodules
+        submodules: true
 
     - name: Install Build Dependencies
       run: |
@@ -33,27 +38,25 @@ jobs:
         sudo apt-get install -y flex bison libssl-dev dwarves bc libelf-dev build-essential git ccache make automake autoconf libtool libncurses-dev
 
     - name: Set up Android NDK (Latest Stable)
-      # This step uses 'setup-android' action to install NDK easily
       uses: android-actions/setup-android@v3
       with:
-        android-version: 34 # Android 13/14 compatibility (higher NDK supports older APIs)
-        # Use a specific NDK version if you know one works better for your kernel:
-        # ndk-version: 25.2.9519653 # Example, uncomment and specify if needed
+        android-version: 34
 
     - name: Configure Kernel
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # Copy your floral_defconfig to the correct kernel config location
-        cp ../../${{ env.FLORAL_DEFCONFIG_PATH }} arch/${{ env.ARCH }}/configs/floral_defconfig
-
-        # Apply the defconfig. 'O=out' keeps build artifacts in a clean directory.
-        make O=out ${{ env.ARCH }}_defconfig
+        # No more 'cp' needed for floral_defconfig, as it's now in the correct
+        # location relative to KERNEL_DIR.
+        # Just ensure the defconfig targets the specific floral_defconfig
+        # by making it the target for the defconfig command.
+        echo "Applying floral_defconfig..."
+        make O=out floral_defconfig # This directly uses floral_defconfig within KERNEL_DIR/arch/arm64/configs/
 
         # --- IMPORTANT: Verify CONFIG_MODULE_SIG=n ---
         echo "Verifying CONFIG_MODULE_SIG setting..."
         grep "CONFIG_MODULE_SIG" out/.config | tee module_sig_check.txt
         if grep -q "CONFIG_MODULE_SIG=y" out/.config; then
-          echo "ERROR: CONFIG_MODULE_SIG is still 'y'. Please ensure '${{ env.FLORAL_DEFCONFIG_PATH }}' sets it to 'n'."
+          echo "ERROR: CONFIG_MODULE_SIG is still 'y'. Please ensure 'arch/arm64/configs/floral_defconfig' sets it to 'n'."
           exit 1
         fi
         echo "Module signature verification confirmed DISABLED (CONFIG_MODULE_SIG=n or not set)."
@@ -61,20 +64,16 @@ jobs:
     - name: Build Kernel and Modules
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # Ensure NDK toolchain is found by make
-        # The 'setup-android' action usually handles PATH, but this makes it explicit for debugging
         export PATH="${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
         export CROSS_COMPILE_ARM64="$(ls -d ${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-* | head -1)"
         export CROSS_COMPILE="$(ls -d ${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-* | head -1)"
 
         echo "Using CROSS_COMPILE_ARM64: ${CROSS_COMPILE_ARM64}"
         echo "Using CROSS_COMPILE: ${CROSS_COMPILE}"
-        clang --version # Verify clang is in PATH
+        clang --version
 
-        # Build the kernel image and modules
         make O=out ${{ env.MAKEFLAGS }} 2>&1 | tee build.log
         
-        # Check for common build errors in the log (adjust as needed)
         if grep -q "Error" build.log || grep -q "error:" build.log; then
             echo "::error::Kernel build failed! Check 'build.log' artifact for details."
             exit 1
@@ -84,7 +83,6 @@ jobs:
     - name: Create Kernel Image and Modules Archive
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # Find the most likely kernel image. Common names: Image.gz, Image.lz4, Image
         KERNEL_IMAGE_PATH=$(find out/arch/${{ env.ARCH }}/boot/ -maxdepth 1 -type f \( -name "Image.gz" -o -name "Image.lz4" -o -name "Image" \) -print -quit)
         
         if [ -z "${KERNEL_IMAGE_PATH}" ]; then
@@ -96,7 +94,8 @@ jobs:
 
         echo "Found kernel image: ${KERNEL_IMAGE_PATH}"
         
-        # Create archive including the found kernel image and modules
+        # 'basename ${KERNEL_IMAGE_PATH}' ensures we just get "Image.gz" not "out/arch/arm64/boot/Image.gz"
+        # when archiving from the 'out' directory.
         tar -czvf kernel_artifacts.tar.gz -C out/ "$(basename ${KERNEL_IMAGE_PATH})" modules_install_dir
 
     - name: Upload Kernel Artifacts
@@ -104,4 +103,4 @@ jobs:
       with:
         name: pixel4-floral-kernel-no-sig
         path: ${{ env.KERNEL_DIR }}/kernel_artifacts.tar.gz
-        retention-days: 7 # Optional: How long to keep the artifact
+        retention-days: 7

@@ -1,11 +1,11 @@
-name: Build Pixel 4 Kernel
+name: Build Pixel 4 Kernel with Full LTO
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Pixel 4 Kernel Compile (No LTO, No Gold)
+    name: Pixel 4 Kernel LTO Support
     runs-on: ubuntu-22.04
 
     env:
@@ -18,63 +18,56 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
+      - name: Install All Dependencies (incl. LLVMgold)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev build-essential \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu
+            binutils-aarch64-linux-gnu binutils-gold \
+            llvm lld
 
-      - name: Download Clang Toolchain
+      - name: Download & Extract Clang Toolchain
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
-          file clang.tar.gz | grep 'gzip compressed' || (echo "Invalid tar.gz" && exit 1)
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
-      - name: Patch Makefiles to Avoid LLD/Gold
+      - name: Setup ld.lld if not present
         run: |
-          sed -i 's|$(LD)|aarch64-linux-gnu-ld|' Makefile
-          sed -i 's|ld.lld|aarch64-linux-gnu-ld|' arch/arm64/Makefile
-          sed -i 's|ld.gold|aarch64-linux-gnu-ld|' arch/arm64/Makefile
-          sed -i 's|LD_IS_LLD=y||' arch/arm64/configs/floral_defconfig || true
+          if [ ! -f toolchains/bin/ld.lld ]; then
+            ln -s $(which ld.lld) toolchains/bin/ld.lld
+          fi
 
       - name: Configure Kernel
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Disable LTO (again via script)
-        run: |
-          export PATH=$PWD/toolchains/bin:$PATH
-          scripts/config --file out/.config -d LTO -d THINLTO -d LD_IS_LLD
-          make O=out ARCH=arm64 olddefconfig
-
-      - name: Compile Kernel (force GNU LD)
+      - name: Compile Kernel with Clang + LTO + ld.lld
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make -j$(nproc) O=out \
             ARCH=arm64 \
-            LD=aarch64-linux-gnu-ld \
+            LD=ld.lld \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Collect Artifacts
+      - name: Package Artifacts
         run: |
           mkdir -p artifacts
-          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "Image not found"
+          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "No kernel image"
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img artifacts/
           if [ -d out/lib/modules ]; then
             mkdir -p artifacts/modules
             cp -r out/lib/modules/* artifacts/modules/
           fi
 
-      - name: Upload Artifacts
+      - name: Upload Build Outputs
         uses: actions/upload-artifact@v4
         with:
-          name: pixel4-kernel-out
+          name: pixel4-kernel-output
           path: artifacts
           

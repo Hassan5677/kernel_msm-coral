@@ -1,72 +1,70 @@
-name: Build Pixel 4 Kernel with Clang and LTO
+name: Build Pixel 4 Kernel (Fixed VDSO32)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Kernel Build
     runs-on: ubuntu-22.04
-
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-      BUILD_USER: github_runner
-      BUILD_HOST: github_actions
+    name: Kernel Build
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout source
         uses: actions/checkout@v3
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev \
             libelf-dev build-essential \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi \
             lld llvm
 
-      - name: Download Clang Toolchain
+      - name: Download clang toolchain
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
-      - name: Symlink ld.lld if missing
+      - name: Export toolchain paths
         run: |
-          if [ ! -f toolchains/bin/ld.lld ]; then
-            ln -s $(which ld.lld) toolchains/bin/ld.lld
-          fi
+          echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/bin" >> $GITHUB_ENV
 
-      - name: Configure Kernel
+      - name: Configure kernel
         run: |
-          export PATH=$PWD/toolchains/bin:$PATH
+          export PATH=$TOOLCHAIN_PATH:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Build Kernel
+      - name: Build kernel
         run: |
-          export PATH=$PWD/toolchains/bin:$PATH
+          export PATH=$TOOLCHAIN_PATH:$PATH
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=clang \
             LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             AS=llvm-as \
             AS32=arm-linux-gnueabi-as \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Save Output Files
+      - name: Save artifacts
         run: |
-          mkdir -p artifacts
-          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || true
-          cp out/arch/arm64/boot/dtbo.img artifacts/ || true
+          mkdir -p outdir
+          cp out/arch/arm64/boot/Image.lz4-dtb outdir/ || true
+          cp out/arch/arm64/boot/dtbo.img outdir/ || true
 
-      - name: Upload Artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-build-output
-          path: artifacts
+          name: kernel-output
+          path: outdir
           

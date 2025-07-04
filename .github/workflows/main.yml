@@ -1,4 +1,4 @@
-name: Build Pixel 4 Kernel (Fixed VDSO32)
+name: Build Pixel 4 Kernel
 
 on:
   workflow_dispatch:
@@ -37,9 +37,9 @@ jobs:
       - name: Configure kernel
         run: |
           export PATH=$TOOLCHAIN_PATH:$PATH
-          make O=out ARCH=arm64 floral_defconfig
+          make O=out ARCH=arm64 coral_defconfig
 
-      - name: Build kernel
+      - name: Build kernel with proper assembler
         run: |
           export PATH=$TOOLCHAIN_PATH:$PATH
           make -j$(nproc) O=out \
@@ -54,7 +54,9 @@ jobs:
             AS=llvm-as \
             AS32=arm-linux-gnueabi-as \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CFLAGS_vgettimeofday.o="-no-integrated-as" \
+            CFLAGS_sigreturn.o="-no-integrated-as"
 
       - name: Save artifacts
         run: |
@@ -62,7 +64,7 @@ jobs:
           cp out/arch/arm64/boot/Image.lz4-dtb outdir/ || true
           cp out/arch/arm64/boot/dtbo.img outdir/ || true
 
-      - name: Upload build artifacts
+      - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
           name: kernel-output

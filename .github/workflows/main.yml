@@ -1,94 +1,76 @@
-name: Kernel Build
+name: Build Floral Kernel for Pixel 4 (Android 13) - No Module Sig
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main # Or the branch where your kernel source and defconfig are located
+  workflow_dispatch: # Allows manual trigger
+
+env:
+  KERNEL_DIR: kernel/google/msm-4.14 # Adjust if your kernel source path is different
+  ARCH: arm64
+  SUBARCH: arm64
+  CROSS_COMPILE_ARM64: aarch64-linux-android- # Android NDK toolchain prefix
+  MAKEFLAGS: -j$(nproc) # Use all available CPU cores for compilation
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Or ubuntu-22.04 for newer base
+
     steps:
-    - name: Checkout kernel source
+    - name: Checkout Repository
       uses: actions/checkout@v4
+      with:
+        submodules: true # If your kernel source includes submodules
 
-    - name: Mark workspace as safe directory
+    - name: Set up Android NDK (Toolchain)
+      # You can use a pre-built NDK or download it.
+      # This example downloads a recent NDK. Adjust version as needed.
       run: |
-        git config --global --add safe.directory /github/workspace
+        NDK_VERSION="25.2.9519653" # Example NDK version, check what's compatible with your AOSP
+        NDK_URL="https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}-linux.zip"
+        echo "Downloading Android NDK r${NDK_VERSION}..."
+        wget -q ${NDK_URL} -O ndk.zip
+        unzip -q ndk.zip -d "${{ runner.temp }}"
+        echo "ANDROID_NDK_HOME=${{ runner.temp }}/android-ndk-r${NDK_VERSION}" >> $GITHUB_ENV
+        echo "${{ runner.temp }}/android-ndk-r${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-    - name: Set up MemKernel as a module (M-OUT) with specified name
+    - name: Install Build Dependencies
       run: |
-        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M
+        sudo apt-get update
+        sudo apt-get install -y flex bison libssl-dev dwarves bc libelf-dev build-essential git ccache make automake autoconf libtool
 
-    - name: Android kernel build (Clang r383902b)
-      uses: lemniskett/android-kernel-actions@master
-      id: build_clang_383902b
-      env:
-        NAME: Loganysl
-      with:
-        arch: arm64
-        compiler: clang-r383902b
-        defconfig: floral_defconfig
-        image: Image.gz-dtb
-        # Specify the cross-compile prefix for arm32 if needed for this build, though arm64 is primary
-        # cross_compile_arm32: arm-none-linux-gnueabihf- # This is a common prefix for arm32 GNU toolchains
+    - name: Copy floral_defconfig
+      run: |
+        # Assuming floral_defconfig is at the root of your repo, adjust path if needed
+        cp floral_defconfig ${{ env.KERNEL_DIR }}/arch/${{ env.ARCH }}/configs/floral_defconfig
 
-    - name: Android kernel build (Clang r536225)
-      uses: lemniskett/android-kernel-actions@master
-      id: build_clang_536225
-      env:
-        NAME: Loganysl
-      with:
-        arch: arm64
-        compiler: clang-r536225
-        defconfig: floral_defconfig
-        image: Image.gz-dtb
-        # Specify the cross-compile prefix for arm32 if needed for this build, though arm64 is primary
-        # cross_compile_arm32: arm-none-linux-gnueabihf- # This is a common prefix for arm32 GNU toolchains
+    - name: Configure Kernel
+      working-directory: ${{ env.KERNEL_DIR }}
+      run: |
+        make O=out ${{ env.ARCH }}_defconfig # This creates the .config in the 'out' directory
+        # Verify the module signature options are set to 'n' or not set
+        if grep -q "CONFIG_MODULE_SIG=y" out/.config; then
+          echo "ERROR: CONFIG_MODULE_SIG is still enabled. Please ensure floral_defconfig sets it to 'n' or comments it out."
+          exit 1
+        fi
+        echo "Module signature verification successfully disabled in configuration."
+        grep "CONFIG_MODULE_SIG" out/.config || echo "CONFIG_MODULE_SIG is not explicitly set (which means it's disabled)."
 
-    - name: Upload Kernel and Module (Clang r383902b)
+
+    - name: Build Kernel and Modules
+      working-directory: ${{ env.KERNEL_DIR }}
+      run: |
+        make O=out ${{ env.MAKEFLAGS }}
+        make O=out modules_install INSTALL_MOD_PATH=out/modules_install_dir ${{ env.MAKEFLAGS }}
+
+    - name: Create Kernel Image and Modules Archive
+      working-directory: ${{ env.KERNEL_DIR }}
+      run: |
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image out/modules_install_dir
+
+    - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: module_clang_383902b
-        path: |
-          ${{ steps.build_clang_383902b.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko # Assuming this path is consistent for both builds
-
-    - name: Upload Kernel and Module (Clang r536225)
-      uses: actions/upload-artifact@v4
-      with:
-        name: module_clang_536225
-        path: |
-          ${{ steps.build_clang_536225.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko # Assuming this path is consistent for both builds
-
-    # Add a job or step for building with arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu
-    # This might require a separate `uses: lemniskett/android-kernel-actions@master` step
-    # or modification of an existing one if the action supports specifying a custom toolchain path.
-    - name: Android kernel build (GNU Toolchain 14.2)
-      uses: lemniskett/android-kernel-actions@master
-      id: build_gnu_toolchain
-      env:
-        NAME: Loganysl
-      with:
-        arch: arm64
-        # For a custom GNU toolchain, you usually need to provide the full path to its bin directory
-        # or rely on the action to install/configure it if it has pre-built support.
-        # Since 'compiler' expects names like 'clang-rXXX', we might need a different approach
-        # or check the action's documentation for custom toolchain support.
-        # Assuming the action can infer from cross_compile if a pre-defined toolchain isn't used:
-        cross_compile: aarch64-none-linux-gnu- # This matches the `arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu` prefix
-        defconfig: floral_defconfig
-        image: Image.gz-dtb
-        # The action `lemniskett/android-kernel-actions` might need a specific `compiler` parameter,
-        # or it might auto-detect if `cross_compile` is set.
-        # If it doesn't support direct GNU toolchain specification this way,
-        # you might need a custom `run` step to manually set up the environment
-        # and invoke the kernel build commands.
-        # For the purpose of "fixing all.yml", I'm assuming it can work with `cross_compile`.
-
-    - name: Upload Kernel and Module (GNU Toolchain 14.2)
-      uses: actions/upload-artifact@v4
-      with:
-        name: module_gnu_toolchain
-        path: |
-          ${{ steps.build_gnu_toolchain.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko # Assuming this path is consistent for all builds
+        name: pixel4-floral-kernel-no-sig
+        path: ${{ env.KERNEL_DIR }}/kernel_artifacts.tar.gz

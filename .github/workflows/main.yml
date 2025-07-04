@@ -1,4 +1,4 @@
-name: Build Pixel 4 Kernel (No Module Sig)
+name: Build Pixel 4 Kernel Image
 
 on:
   push:
@@ -7,12 +7,7 @@ on:
   workflow_dispatch: # Allows manual triggering from GitHub UI
 
 env:
-  # --- CUSTOMIZE THESE VARIABLES ---
-  KERNEL_DIR: kernel/msm-coral # **CONFIRM THIS IS THE DIRECTORY CONTAINING THE MAIN KERNEL MAKEFILE**
-  # floral_defconfig is expected to be at KERNEL_DIR/arch/arm64/configs/floral_defconfig
-  # No need for FLORAL_DEFCONFIG_PATH if it's in the standard location relative to KERNEL_DIR
-  # --- END CUSTOMIZATION ---
-
+  KERNEL_DIR: kernel/msm-coral # Directory containing the kernel source
   ARCH: arm64
   SUBARCH: arm64
   MAKEFLAGS: -j$(nproc)
@@ -39,33 +34,15 @@ jobs:
         cmake-version: latest
         ndk-api-level: 34
 
-    - name: Debug Kernel Directory and Configure
-      working-directory: ${{ env.KERNEL_DIR }} # This is where 'make' will run from
+    - name: Configure Kernel
+      working-directory: ${{ env.KERNEL_DIR }}
       run: |
         echo "Current working directory: $(pwd)"
-        echo "Listing contents of KERNEL_DIR:"
-        ls -lA . # List all files/dirs including hidden ones in current KERNEL_DIR
-
-        echo "Listing contents of arch/${{ env.ARCH }}/configs/:"
-        ls -lA arch/${{ env.ARCH }}/configs/ # List all files/dirs in the configs directory
-
-        echo "Attempting to find floral_defconfig specifically:"
-        find arch/${{ env.ARCH }}/configs/ -name "floral_defconfig" -print || echo "floral_defconfig NOT FOUND by find command!"
-
+        ls -lA .
         echo "Applying floral_defconfig..."
-        # This command expects floral_defconfig to be at arch/arm64/configs/floral_defconfig
         make O=out floral_defconfig
 
-        # --- IMPORTANT: Verify CONFIG_MODULE_SIG=n ---
-        echo "Verifying CONFIG_MODULE_SIG setting..."
-        grep "CONFIG_MODULE_SIG" out/.config | tee module_sig_check.txt
-        if grep -q "CONFIG_MODULE_SIG=y" out/.config; then
-          echo "ERROR: CONFIG_MODULE_SIG is still 'y'. Please ensure 'arch/arm64/configs/floral_defconfig' sets it to 'n'."
-          exit 1
-        fi
-        echo "Module signature verification confirmed DISABLED (CONFIG_MODULE_SIG=n or not set)."
-
-    - name: Build Kernel and Modules
+    - name: Build Kernel
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
         export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
@@ -82,27 +59,26 @@ jobs:
             echo "::error::Kernel build failed! Check 'build.log' artifact for details."
             exit 1
         fi
-        echo "Kernel and modules built successfully."
+        echo "Kernel built successfully."
 
-    - name: Create Kernel Image and Modules Archive
+    - name: Create Kernel Image Archive
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
         KERNEL_IMAGE_PATH=$(find out/arch/${{ env.ARCH }}/boot/ -maxdepth 1 -type f \( -name "Image.gz" -o -name "Image.lz4" -o -name "Image" \) -print -quit)
         
         if [ -z "${KERNEL_IMAGE_PATH}" ]; then
           echo "ERROR: No kernel image found in out/arch/${{ env.ARCH }}/boot/."
-          echo "Please inspect the build.log for exact output paths."
           ls -l out/arch/${{ env.ARCH }}/boot/
           exit 1
         fi
 
         echo "Found kernel image: ${KERNEL_IMAGE_PATH}"
         
-        tar -czvf kernel_artifacts.tar.gz -C out/ "$(basename ${KERNEL_IMAGE_PATH})" modules_install_dir
+        tar -czvf kernel_image.tar.gz -C out/ "$(basename ${KERNEL_IMAGE_PATH})"
 
-    - name: Upload Kernel Artifacts
+    - name: Upload Kernel Image Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: pixel4-floral-kernel-no-sig
-        path: ${{ env.KERNEL_DIR }}/kernel_artifacts.tar.gz
+        name: pixel4-floral-kernel-image
+        path: ${{ env.KERNEL_DIR }}/kernel_image.tar.gz
         retention-days: 7

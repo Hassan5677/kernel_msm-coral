@@ -25,12 +25,11 @@ jobs:
             bc bison flex libssl-dev libelf-dev \
             build-essential curl git
 
-      - name: Download & Extract Clang r416183b
+      - name: Download & Extract Clang r416183b (working mirror)
         run: |
           mkdir -p toolchains
-          cd toolchains
-          curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz | tar -xz
-          cd ..
+          curl -L -o clang.tar.gz https://commondatastorage.googleapis.com/android-ci/master-clang/clang-r416183b.tar.gz
+          tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
       - name: Configure Kernel (floral_defconfig)
         run: |

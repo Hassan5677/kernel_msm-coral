@@ -23,28 +23,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev \
-            build-essential git
+            build-essential curl git
 
-      - name: Clone AOSP Prebuilt Clang Toolchain
+      - name: Download & Extract Clang Toolchain
         run: |
-          # Clone the AOSP prebuilts repository
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/  -b master --single-branch clang-prebuilts
+          mkdir -p toolchains
 
-          # Checkout the specific commit containing clang-r383902b
-          cd clang-prebuilts
-          git checkout 0e9e7035bf8ad42437c6156e5950eab13655b26c
+          # Define the Clang toolchain URL
+          CLANG_URL="https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz "
 
-          # Navigate back to the root directory
-          cd ..
+          # Debug: Print the URL to verify it's correct
+          echo "Clang Toolchain URL: $CLANG_URL"
+
+          # Download the Clang toolchain
+          curl -L -o clang.tar.gz "$CLANG_URL"
+
+          # Validate the downloaded file
+          if ! file clang.tar.gz | grep -q 'gzip compressed'; then
+            echo "Download failed or not a valid .tar.gz file!"
+            exit 1
+          fi
+
+          # Extract the toolchain
+          tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
       - name: Configure Kernel
         run: |
-          export PATH=$PWD/clang-prebuilts/clang-r383902b/bin:$PATH
+          export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
       - name: Compile Kernel
         run: |
-          export PATH=$PWD/clang-prebuilts/clang-r383902b/bin:$PATH
+          export PATH=$PWD/toolchains/bin:$PATH
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=clang \

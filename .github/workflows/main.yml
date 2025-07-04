@@ -1,45 +1,74 @@
-name: Build Pixel 4 Kernel
+name: Build Pixel 4 Kernel
 
 on:
+  # compile on demand from the Actions tab,
+  # and automatically when you push to main
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Compile Pixel 4 (coral/floral)
+    runs-on: ubuntu-22.04        # LTS runner, faster package mirrors
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      BUILD_USER: github_runner
+      BUILD_HOST: github_actions
 
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v3
+    # 1) Kernel source
+    - name: Checkout kernel
+      uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison flex libssl-dev libelf-dev build-essential curl
+    # 2) Packages needed for aarch64 kernel builds
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison flex libssl-dev libelf-dev \
+          build-essential curl git
 
-      - name: Download Google Clang Prebuilt
-        run: |
-          mkdir -p toolchains
-          cd toolchains
-          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz
-          tar -xzf clang-r416183b.tar.gz
-          cd ..
+    # 3) Pre‑built Clang (Google clang‑r416183b, mirrored for direct download)
+    - name: Download prebuilt Clang
+      run: |
+        mkdir -p toolchains
+        curl -L -o clang.tar.gz \
+          https://github.com/Hassan5677/android-prebuilt-clang/releases/download/clang-r416183b/clang-r416183b.tar.gz
+        tar -xzf clang.tar.gz -C toolchains --strip-components=1
+        echo "Toolchain unpacked at $(pwd)/toolchains"
 
-      - name: Compile Kernel
-        run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CLANG_PATH=$(pwd)/toolchains
-          export PATH=$CLANG_PATH/bin:$PATH
+    # 4) Defconfig + build
+    - name: Configure kernel
+      run: |
+        export PATH=$PWD/toolchains/bin:$PATH
+        make O=out floral_defconfig
 
-          make O=out ARCH=arm64 floral_defconfig
-          make -j$(nproc) O=out ARCH=arm64 CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+    - name: Build kernel
+      run: |
+        export PATH=$PWD/toolchains/bin:$PATH
+        make -j$(nproc) O=out \
+          CC=clang \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Upload Kernel Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image.lz4-dtb
-          path: out/arch/arm64/boot/Image.lz4-dtb
-          
+    # 5) Collect build outputs
+    - name: Package artifacts
+      run: |
+        mkdir -p artifacts
+        cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || true
+        [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img artifacts/
+        if [ -d out/lib/modules ]; then
+          mkdir -p artifacts/modules
+          cp -r out/lib/modules/* artifacts/modules/
+        fi
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: pixel4-kernel-build
+        path: artifacts
+        

@@ -21,7 +21,7 @@ jobs:
           libncurses5-dev libssl-dev libelf-dev lzop python3 unzip zip \
           gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
           binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-          wget
+          llvm lld wget
 
     - name: Download Clang Toolchain
       run: |

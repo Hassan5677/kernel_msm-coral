@@ -44,11 +44,11 @@ jobs:
         make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+          VDSO32=0  # Disable VDSO32 to avoid the error
 
     - name: Upload Image.gz-dtb
       uses: actions/upload-artifact@v4
       with:
         name: Image.gz-dtb
         path: out/arch/arm64/boot/Image.gz-dtb
-        

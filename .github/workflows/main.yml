@@ -1,11 +1,11 @@
-name: Build Pixel 4 Kernel with Full LTO
+name: Build Pixel 4 Kernel with Clang and LTO
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Pixel 4 Kernel LTO Support
+    name: Kernel Build
     runs-on: ubuntu-22.04
 
     env:
@@ -18,22 +18,23 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v3
 
-      - name: Install All Dependencies (incl. LLVMgold)
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison flex libssl-dev libelf-dev build-essential \
+            bc bison flex libssl-dev \
+            libelf-dev build-essential \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-gold \
-            llvm lld
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            lld llvm
 
-      - name: Download & Extract Clang Toolchain
+      - name: Download Clang Toolchain
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
-      - name: Setup ld.lld if not present
+      - name: Symlink ld.lld if missing
         run: |
           if [ ! -f toolchains/bin/ld.lld ]; then
             ln -s $(which ld.lld) toolchains/bin/ld.lld
@@ -44,30 +45,28 @@ jobs:
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Compile Kernel with Clang + LTO + ld.lld
+      - name: Build Kernel
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make -j$(nproc) O=out \
             ARCH=arm64 \
-            LD=ld.lld \
             CC=clang \
+            LD=ld.lld \
+            AS=llvm-as \
+            AS32=arm-linux-gnueabi-as \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Package Artifacts
+      - name: Save Output Files
         run: |
           mkdir -p artifacts
-          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "No kernel image"
-          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img artifacts/
-          if [ -d out/lib/modules ]; then
-            mkdir -p artifacts/modules
-            cp -r out/lib/modules/* artifacts/modules/
-          fi
+          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || true
+          cp out/arch/arm64/boot/dtbo.img artifacts/ || true
 
-      - name: Upload Build Outputs
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pixel4-kernel-output
+          name: kernel-build-output
           path: artifacts
           

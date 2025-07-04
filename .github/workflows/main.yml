@@ -26,17 +26,23 @@ jobs:
             build-essential curl git \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
-      - name: Download & Extract Clang r416183b
+      - name: Download & Extract Clang (r416183b)
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
-          file clang.tar.gz | grep 'gzip compressed' || (echo "Download failed or invalid file" && exit 1)
+          file clang.tar.gz | grep 'gzip compressed' || (echo "Invalid tar.gz" && exit 1)
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
       - name: Configure Kernel
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
+
+      - name: Disable LTO in .config
+        run: |
+          export PATH=$PWD/toolchains/bin:$PATH
+          scripts/config --file out/.config -d LTO -d THINLTO
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Compile Kernel
         run: |
@@ -51,7 +57,7 @@ jobs:
       - name: Package Artifacts
         run: |
           mkdir -p artifacts
-          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "Image.lz4-dtb not found"
+          cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "Image not found"
           [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img artifacts/
           if [ -d out/lib/modules ]; then
             mkdir -p artifacts/modules

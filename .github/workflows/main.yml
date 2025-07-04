@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    name: Compile Pixel 4 Kernel (floral)
+    name: Pixel 4 Kernel Compile (No LTO, No Gold)
     runs-on: ubuntu-22.04
 
     env:
@@ -22,40 +22,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison flex libssl-dev libelf-dev \
-            build-essential curl git \
+            bc bison flex libssl-dev libelf-dev build-essential \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-gold
+            binutils-aarch64-linux-gnu
 
-      - name: Download & Extract Clang (r416183b)
+      - name: Download Clang Toolchain
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
           file clang.tar.gz | grep 'gzip compressed' || (echo "Invalid tar.gz" && exit 1)
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
+      - name: Patch Makefiles to Avoid LLD/Gold
+        run: |
+          sed -i 's|$(LD)|aarch64-linux-gnu-ld|' Makefile
+          sed -i 's|ld.lld|aarch64-linux-gnu-ld|' arch/arm64/Makefile
+          sed -i 's|ld.gold|aarch64-linux-gnu-ld|' arch/arm64/Makefile
+          sed -i 's|LD_IS_LLD=y||' arch/arm64/configs/floral_defconfig || true
+
       - name: Configure Kernel
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make O=out ARCH=arm64 floral_defconfig
 
-      - name: Disable LTO & Use GNU ld
+      - name: Disable LTO (again via script)
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           scripts/config --file out/.config -d LTO -d THINLTO -d LD_IS_LLD
           make O=out ARCH=arm64 olddefconfig
 
-      - name: Compile Kernel
+      - name: Compile Kernel (force GNU LD)
         run: |
           export PATH=$PWD/toolchains/bin:$PATH
           make -j$(nproc) O=out \
             ARCH=arm64 \
+            LD=aarch64-linux-gnu-ld \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Package Artifacts
+      - name: Collect Artifacts
         run: |
           mkdir -p artifacts
           cp out/arch/arm64/boot/Image.lz4-dtb artifacts/ || echo "Image not found"
@@ -68,6 +75,6 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pixel4-kernel-build
+          name: pixel4-kernel-out
           path: artifacts
           

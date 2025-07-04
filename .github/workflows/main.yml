@@ -1,127 +1,107 @@
-name: Build Floral Kernel for Pixel 4 (Android 13) - Custom Toolchain
+name: Build Pixel 4 Kernel (No Module Sig)
 
 on:
   push:
     branches:
-      - main # Or the branch where your kernel source and defconfig are located
-  workflow_dispatch: # Allows manual trigger
+      - main # Adjust if your kernel source and defconfig are on a different branch
+  workflow_dispatch: # Allows manual triggering from GitHub UI
 
 env:
-  KERNEL_DIR: kernel/google/msm-4.14 # Adjust if your kernel source path is different
+  # --- CUSTOMIZE THESE VARIABLES ---
+  KERNEL_DIR: kernel/google/msm-4.14 # Path to your kernel source within the repo (e.g., 'kernel/google/msm-4.14')
+  FLORAL_DEFCONFIG_PATH: floral_defconfig # Path to your floral_defconfig within the repo (e.g., 'floral_defconfig' if at root)
+  # --- END CUSTOMIZATION ---
+
   ARCH: arm64
   SUBARCH: arm64
-  # Use your specific cross-compile prefixes
-  CROSS_COMPILE_ARM64: aarch64-none-linux-gnu-
-  CROSS_COMPILE: arm-none-linux-gnueabihf- # For 32-bit components if needed
+  # NDK will set up the correct cross-compile prefix automatically
   MAKEFLAGS: -j$(nproc) # Use all available CPU cores for compilation
 
 jobs:
   build:
-    runs-on: ubuntu-latest # Or ubuntu-22.04 for newer base
+    runs-on: ubuntu-latest # Good default. ubuntu-22.04 also works.
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
       with:
-        submodules: true # If your kernel source includes submodules
-
-    - name: Download and Extract Custom Toolchains
-      # Adjust 'tools/my_toolchains.tar.gz' to the actual path in your repo
-      # and 'toolchains_dir' to the name of the directory inside the tarball
-      run: |
-        TOOLCHAIN_ARCHIVE_PATH="tools/my_toolchains.tar.gz" # <--- ADJUST THIS IF YOUR ARCHIVE IS NOT IN 'tools/'
-        DOWNLOAD_URL="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/${TOOLCHAIN_ARCHIVE_PATH}"
-        TEMP_TOOLCHAIN_DIR="${{ runner.temp }}/toolchains"
-        TEMP_CHAIN_ARCHIVE="${TEMP_TOOLCHAIN_DIR}/my_toolchains.tar.gz"
-
-        mkdir -p "${TEMP_TOOLCHAIN_DIR}"
-        echo "Attempting to download toolchains from: ${DOWNLOAD_URL}"
-        
-        # Download the toolchain archive
-        wget -q "${DOWNLOAD_URL}" -O "${TEMP_CHAIN_ARCHIVE}"
-        
-        # Check if download was successful and file exists
-        if [ ! -f "${TEMP_CHAIN_ARCHIVE}" ]; then
-          echo "ERROR: Toolchain archive '${TEMP_CHAIN_ARCHIVE}' was not downloaded. Check URL and file existence."
-          exit 1
-        fi
-        
-        echo "Toolchain archive downloaded successfully. File size:"
-        ls -lh "${TEMP_CHAIN_ARCHIVE}"
-
-        echo "Attempting to extract toolchains to: ${TEMP_TOOLCHAIN_DIR}"
-        # Extract the toolchain archive
-        tar -xf "${TEMP_CHAIN_ARCHIVE}" -C "${TEMP_TOOLCHAIN_DIR}"
-
-        # Determine the top-level directory created by tar (e.g., 'my_toolchains')
-        # This assumes the tarball unpacks into a single root directory inside TEMP_TOOLCHAIN_DIR
-        TOOLCHAIN_ROOT_DIR=$(find "${TEMP_TOOLCHAIN_DIR}" -maxdepth 1 -mindepth 1 -type d -print -quit)
-        
-        if [ -z "$TOOLCHAIN_ROOT_DIR" ]; then
-          echo "Error: Toolchain directory not found after extraction. Check the contents of your .tar.gz file."
-          ls -l "${TEMP_TOOLCHAIN_DIR}" # Show contents of temp dir
-          exit 1
-        fi
-        
-        echo "Toolchains extracted to: ${TOOLCHAIN_ROOT_DIR}"
-        ls -l "${TOOLCHAIN_ROOT_DIR}" # List contents of extracted dir
-        
-        # Add toolchain bins to PATH
-        # Adjust these paths based on how your toolchain archive is structured
-        # Example: If your clang is at my_toolchains/clang-r383902b/bin
-        echo "${TOOLCHAIN_ROOT_DIR}/clang-r383902b/bin" >> $GITHUB_PATH
-        echo "${TOOLCHAIN_ROOT_DIR}/aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
-        echo "${TOOLCHAIN_ROOT_DIR}/arm-none-linux-gnueabihf/bin" >> $GITHUB_PATH
-        
-        echo "TOOLCHAIN_ROOT_DIR=${TOOLCHAIN_ROOT_DIR}" >> $GITHUB_ENV
-        echo "Custom toolchains set up and added to PATH."
-        
-        # Verify compilers are found
-        aarch64-none-linux-gnu-gcc --version || echo "aarch64-none-linux-gnu-gcc not found in PATH."
-        arm-none-linux-gnueabihf-gcc --version || echo "arm-none-linux-gnueabihf-gcc not found in PATH."
-        clang --version || echo "clang not found in PATH."
+        submodules: true # Important if your kernel source uses git submodules
 
     - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y flex bison libssl-dev dwarves bc libelf-dev build-essential git ccache make automake autoconf libtool
+        sudo apt-get install -y flex bison libssl-dev dwarves bc libelf-dev build-essential git ccache make automake autoconf libtool libncurses-dev
 
-    - name: Copy floral_defconfig
-      run: |
-        # Assuming floral_defconfig is at the root of your repo, adjust path if needed
-        cp floral_defconfig ${{ env.KERNEL_DIR }}/arch/${{ env.ARCH }}/configs/floral_defconfig
+    - name: Set up Android NDK (Latest Stable)
+      # This step uses 'setup-android' action to install NDK easily
+      uses: android-actions/setup-android@v3
+      with:
+        android-version: 34 # Android 13/14 compatibility (higher NDK supports older APIs)
+        # Use a specific NDK version if you know one works better for your kernel:
+        # ndk-version: 25.2.9519653 # Example, uncomment and specify if needed
 
     - name: Configure Kernel
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        make O=out ${{ env.ARCH }}_defconfig # This creates the .config in the 'out' directory
-        # Sanity check for module signature status (either 'n' or not set)
+        # Copy your floral_defconfig to the correct kernel config location
+        cp ../../${{ env.FLORAL_DEFCONFIG_PATH }} arch/${{ env.ARCH }}/configs/floral_defconfig
+
+        # Apply the defconfig. 'O=out' keeps build artifacts in a clean directory.
+        make O=out ${{ env.ARCH }}_defconfig
+
+        # --- IMPORTANT: Verify CONFIG_MODULE_SIG=n ---
+        echo "Verifying CONFIG_MODULE_SIG setting..."
+        grep "CONFIG_MODULE_SIG" out/.config | tee module_sig_check.txt
         if grep -q "CONFIG_MODULE_SIG=y" out/.config; then
-          echo "ERROR: CONFIG_MODULE_SIG is still enabled. Please ensure floral_defconfig sets it to 'n' or comments it out."
+          echo "ERROR: CONFIG_MODULE_SIG is still 'y'. Please ensure '${{ env.FLORAL_DEFCONFIG_PATH }}' sets it to 'n'."
           exit 1
         fi
-        echo "Module signature verification successfully disabled in configuration (or not explicitly set)."
-        grep "CONFIG_MODULE_SIG" out/.config || echo "CONFIG_MODULE_SIG is not explicitly set (which means it's disabled)."
+        echo "Module signature verification confirmed DISABLED (CONFIG_MODULE_SIG=n or not set)."
 
     - name: Build Kernel and Modules
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # Optional: Set KBUILD_COMPILER_STRING if your kernel build requires it for your specific clang version.
-        # Example: make O=out KBUILD_COMPILER_STRING="Android Clang 11.0.1" ${{ env.MAKEFLAGS }}
-        make O=out ${{ env.MAKEFLAGS }}
+        # Ensure NDK toolchain is found by make
+        # The 'setup-android' action usually handles PATH, but this makes it explicit for debugging
+        export PATH="${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+        export CROSS_COMPILE_ARM64="$(ls -d ${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-* | head -1)"
+        export CROSS_COMPILE="$(ls -d ${ANDROID_HOME}/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-* | head -1)"
+
+        echo "Using CROSS_COMPILE_ARM64: ${CROSS_COMPILE_ARM64}"
+        echo "Using CROSS_COMPILE: ${CROSS_COMPILE}"
+        clang --version # Verify clang is in PATH
+
+        # Build the kernel image and modules
+        make O=out ${{ env.MAKEFLAGS }} 2>&1 | tee build.log
+        
+        # Check for common build errors in the log (adjust as needed)
+        if grep -q "Error" build.log || grep -q "error:" build.log; then
+            echo "::error::Kernel build failed! Check 'build.log' artifact for details."
+            exit 1
+        fi
+        echo "Kernel and modules built successfully."
 
     - name: Create Kernel Image and Modules Archive
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # The actual kernel image name might vary slightly (e.g., Image.gz, Image.lz4)
-        # Verify 'ls out/arch/${{ env.ARCH }}/boot/' to find the correct name if 'Image' fails.
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image || \
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.gz || \
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.lz4 || \
-        (echo "ERROR: Kernel Image not found. Check out/arch/${{ env.ARCH }}/boot/ directory." && exit 1)
+        # Find the most likely kernel image. Common names: Image.gz, Image.lz4, Image
+        KERNEL_IMAGE_PATH=$(find out/arch/${{ env.ARCH }}/boot/ -maxdepth 1 -type f \( -name "Image.gz" -o -name "Image.lz4" -o -name "Image" \) -print -quit)
+        
+        if [ -z "${KERNEL_IMAGE_PATH}" ]; then
+          echo "ERROR: No kernel image found in out/arch/${{ env.ARCH }}/boot/."
+          echo "Please inspect the build.log for exact output paths."
+          ls -l out/arch/${{ env.ARCH }}/boot/
+          exit 1
+        fi
+
+        echo "Found kernel image: ${KERNEL_IMAGE_PATH}"
+        
+        # Create archive including the found kernel image and modules
+        tar -czvf kernel_artifacts.tar.gz -C out/ "$(basename ${KERNEL_IMAGE_PATH})" modules_install_dir
 
     - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: pixel4-floral-kernel-no-sig
         path: ${{ env.KERNEL_DIR }}/kernel_artifacts.tar.gz
+        retention-days: 7 # Optional: How long to keep the artifact

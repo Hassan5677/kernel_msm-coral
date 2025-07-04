@@ -8,14 +8,9 @@ on:
 
 env:
   # --- CUSTOMIZE THESE VARIABLES ---
-  # KERNEL_DIR should now point to your 'kernel/msm-coral' directory
-  KERNEL_DIR: kernel/msm-coral # THIS IS THE CRUCIAL CHANGE
-  
-  # floral_defconfig is already within the KERNEL_DIR at arch/arm64/configs/
-  # So, we don't need to 'copy' it from an external path anymore.
-  # We will just ensure the defconfig command targets it correctly.
-  # You can remove FLORAL_DEFCONFIG_PATH if you want, but I'll keep it for clarity.
-  FLORAL_DEFCONFIG_PATH: arch/arm64/configs/floral_defconfig 
+  KERNEL_DIR: kernel/msm-coral # **CONFIRM THIS IS THE DIRECTORY CONTAINING THE MAIN KERNEL MAKEFILE**
+  # floral_defconfig is expected to be at KERNEL_DIR/arch/arm64/configs/floral_defconfig
+  # No need for FLORAL_DEFCONFIG_PATH if it's in the standard location relative to KERNEL_DIR
   # --- END CUSTOMIZATION ---
 
   ARCH: arm64
@@ -42,15 +37,22 @@ jobs:
       with:
         android-version: 34
 
-    - name: Configure Kernel
-      working-directory: ${{ env.KERNEL_DIR }}
+    - name: Debug Kernel Directory and Configure
+      working-directory: ${{ env.KERNEL_DIR }} # This is where 'make' will run from
       run: |
-        # No more 'cp' needed for floral_defconfig, as it's now in the correct
-        # location relative to KERNEL_DIR.
-        # Just ensure the defconfig targets the specific floral_defconfig
-        # by making it the target for the defconfig command.
+        echo "Current working directory: $(pwd)"
+        echo "Listing contents of KERNEL_DIR:"
+        ls -lA . # List all files/dirs including hidden ones in current KERNEL_DIR
+
+        echo "Listing contents of arch/${{ env.ARCH }}/configs/:"
+        ls -lA arch/${{ env.ARCH }}/configs/ # List all files/dirs in the configs directory
+
+        echo "Attempting to find floral_defconfig specifically:"
+        find arch/${{ env.ARCH }}/configs/ -name "floral_defconfig" -print || echo "floral_defconfig NOT FOUND by find command!"
+
         echo "Applying floral_defconfig..."
-        make O=out floral_defconfig # This directly uses floral_defconfig within KERNEL_DIR/arch/arm64/configs/
+        # This command expects floral_defconfig to be at arch/arm64/configs/floral_defconfig
+        make O=out floral_defconfig
 
         # --- IMPORTANT: Verify CONFIG_MODULE_SIG=n ---
         echo "Verifying CONFIG_MODULE_SIG setting..."
@@ -59,7 +61,7 @@ jobs:
           echo "ERROR: CONFIG_MODULE_SIG is still 'y'. Please ensure 'arch/arm64/configs/floral_defconfig' sets it to 'n'."
           exit 1
         fi
-        echo "Module signature verification confirmed DISABLED (CONFIG_MODULE_SIG=n or not set)."
+        echo "Module signature verification confirmed DISABLED (CONFIG_MODULE_SIG=n or not not set)."
 
     - name: Build Kernel and Modules
       working-directory: ${{ env.KERNEL_DIR }}
@@ -94,8 +96,6 @@ jobs:
 
         echo "Found kernel image: ${KERNEL_IMAGE_PATH}"
         
-        # 'basename ${KERNEL_IMAGE_PATH}' ensures we just get "Image.gz" not "out/arch/arm64/boot/Image.gz"
-        # when archiving from the 'out' directory.
         tar -czvf kernel_artifacts.tar.gz -C out/ "$(basename ${KERNEL_IMAGE_PATH})" modules_install_dir
 
     - name: Upload Kernel Artifacts

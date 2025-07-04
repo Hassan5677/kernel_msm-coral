@@ -25,13 +25,12 @@ jobs:
             bc bison flex libssl-dev libelf-dev \
             build-essential curl git
 
-      - name: Download Clang r416183b (Working Mirror)
+      - name: Download & Extract Clang r416183b
         run: |
           mkdir -p toolchains
-          curl -L -o clang.tar.gz \
-            https://gitlab.com/PixelOS-Devices/clang-builds/-/raw/master/clang-r416183b.tar.gz
-          file clang.tar.gz | grep 'gzip compressed' || (echo "Download failed or not a tar.gz!" && exit 1)
-          tar -xzf clang.tar.gz -C toolchains --strip-components=1
+          cd toolchains
+          curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz | tar -xz
+          cd ..
 
       - name: Configure Kernel (floral_defconfig)
         run: |
@@ -63,3 +62,4 @@ jobs:
         with:
           name: pixel4-kernel-build
           path: artifacts
+          

@@ -1,4 +1,4 @@
-name: Build Floral Kernel for Pixel 4 (Android 13) - No Module Sig
+name: Build Floral Kernel for Pixel 4 (Android 13) - Custom Toolchain
 
 on:
   push:
@@ -10,7 +10,9 @@ env:
   KERNEL_DIR: kernel/google/msm-4.14 # Adjust if your kernel source path is different
   ARCH: arm64
   SUBARCH: arm64
-  CROSS_COMPILE_ARM64: aarch64-linux-android- # Android NDK toolchain prefix
+  # Use your specific cross-compile prefixes
+  CROSS_COMPILE_ARM64: aarch64-none-linux-gnu-
+  CROSS_COMPILE: arm-none-linux-gnueabihf- # For 32-bit components if needed, though often CROSS_COMPILE_ARM64 suffices for pure 64-bit builds
   MAKEFLAGS: -j$(nproc) # Use all available CPU cores for compilation
 
 jobs:
@@ -23,17 +25,32 @@ jobs:
       with:
         submodules: true # If your kernel source includes submodules
 
-    - name: Set up Android NDK (Toolchain)
-      # You can use a pre-built NDK or download it.
-      # This example downloads a recent NDK. Adjust version as needed.
+    - name: Download and Extract Custom Toolchains
+      # Adjust 'tools/my_toolchains.tar.gz' to the actual path in your repo
+      # and 'toolchains_dir' to the name of the directory inside the tarball
       run: |
-        NDK_VERSION="25.2.9519653" # Example NDK version, check what's compatible with your AOSP
-        NDK_URL="https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}-linux.zip"
-        echo "Downloading Android NDK r${NDK_VERSION}..."
-        wget -q ${NDK_URL} -O ndk.zip
-        unzip -q ndk.zip -d "${{ runner.temp }}"
-        echo "ANDROID_NDK_HOME=${{ runner.temp }}/android-ndk-r${NDK_VERSION}" >> $GITHUB_ENV
-        echo "${{ runner.temp }}/android-ndk-r${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+        mkdir -p ${{ runner.temp }}/toolchains
+        wget -q https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/tools/my_toolchains.tar.gz -O ${{ runner.temp }}/toolchains/my_toolchains.tar.gz
+        tar -xf ${{ runner.temp }}/toolchains/my_toolchains.tar.gz -C ${{ runner.temp }}/toolchains/
+        
+        # Determine the top-level directory created by tar (e.g., 'my_toolchains')
+        TOOLCHAIN_ROOT_DIR=$(find ${{ runner.temp }}/toolchains -maxdepth 1 -mindepth 1 -type d -name "my_toolchains" -print -quit || find ${{ runner.temp }}/toolchains -maxdepth 1 -mindepth 1 -type d -print -quit)
+        
+        if [ -z "$TOOLCHAIN_ROOT_DIR" ]; then
+          echo "Error: Toolchain directory not found after extraction."
+          exit 1
+        fi
+
+        # Add toolchain bins to PATH
+        # Adjust these paths based on how your toolchain archive is structured
+        echo "${TOOLCHAIN_ROOT_DIR}/clang-r383902b/bin" >> $GITHUB_PATH
+        echo "${TOOLCHAIN_ROOT_DIR}/aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
+        echo "${TOOLCHAIN_ROOT_DIR}/arm-none-linux-gnueabihf/bin" >> $GITHUB_PATH
+        
+        echo "TOOLCHAIN_ROOT_DIR=${TOOLCHAIN_ROOT_DIR}" >> $GITHUB_ENV
+        echo "Custom toolchains set up and added to PATH."
+        ls -l "${TOOLCHAIN_ROOT_DIR}/clang-r383902b/bin" # Verify clang is there
+        ls -l "${TOOLCHAIN_ROOT_DIR}/aarch64-none-linux-gnu/bin" # Verify aarch64 gcc is there
 
     - name: Install Build Dependencies
       run: |
@@ -49,25 +66,32 @@ jobs:
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
         make O=out ${{ env.ARCH }}_defconfig # This creates the .config in the 'out' directory
-        # Verify the module signature options are set to 'n' or not set
+        # Sanity check for module signature status (either 'n' or not set)
         if grep -q "CONFIG_MODULE_SIG=y" out/.config; then
           echo "ERROR: CONFIG_MODULE_SIG is still enabled. Please ensure floral_defconfig sets it to 'n' or comments it out."
           exit 1
         fi
-        echo "Module signature verification successfully disabled in configuration."
+        echo "Module signature verification successfully disabled in configuration (or not explicitly set)."
         grep "CONFIG_MODULE_SIG" out/.config || echo "CONFIG_MODULE_SIG is not explicitly set (which means it's disabled)."
-
 
     - name: Build Kernel and Modules
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
+        # Explicitly setting KBUILD_COMPILER_STRING if your clang requires it
+        # Sometimes KBUILD_COMPILER_STRING is needed to trick the kernel build
+        # if the compiler name doesn't match what it expects.
+        # Check your successful local build logs for what KBUILD_COMPILER_STRING might be set to.
+        # Example: KBUILD_COMPILER_STRING="Android Clang 11.0.1"
         make O=out ${{ env.MAKEFLAGS }}
-        make O=out modules_install INSTALL_MOD_PATH=out/modules_install_dir ${{ env.MAKEFLAGS }}
 
     - name: Create Kernel Image and Modules Archive
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image out/modules_install_dir
+        # The actual kernel image name might vary slightly (e.g., Image.gz, Image.lz4)
+        # Verify 'ls out/arch/${{ env.ARCH }}/boot/' to find the correct name if 'Image' fails.
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image out/modules_install_dir || \
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.gz out/modules_install_dir || \
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.lz4 out/modules_install_dir
 
     - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4

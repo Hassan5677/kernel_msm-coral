@@ -23,13 +23,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison flex libssl-dev libelf-dev \
-            build-essential curl git
+            build-essential curl git \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
-      - name: Download & Extract Clang (r416183b)
+      - name: Download & Extract Clang r416183b
         run: |
           mkdir -p toolchains
           curl -L -o clang.tar.gz https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r416183b.tar.gz
-          file clang.tar.gz | grep 'gzip compressed' || (echo "ERROR: Download failed or invalid file format" && exit 1)
+          file clang.tar.gz | grep 'gzip compressed' || (echo "Download failed or invalid file" && exit 1)
           tar -xzf clang.tar.gz -C toolchains --strip-components=1
 
       - name: Configure Kernel

@@ -12,7 +12,7 @@ env:
   SUBARCH: arm64
   # Use your specific cross-compile prefixes
   CROSS_COMPILE_ARM64: aarch64-none-linux-gnu-
-  CROSS_COMPILE: arm-none-linux-gnueabihf- # For 32-bit components if needed, though often CROSS_COMPILE_ARM64 suffices for pure 64-bit builds
+  CROSS_COMPILE: arm-none-linux-gnueabihf- # For 32-bit components if needed
   MAKEFLAGS: -j$(nproc) # Use all available CPU cores for compilation
 
 jobs:
@@ -29,28 +29,57 @@ jobs:
       # Adjust 'tools/my_toolchains.tar.gz' to the actual path in your repo
       # and 'toolchains_dir' to the name of the directory inside the tarball
       run: |
-        mkdir -p ${{ runner.temp }}/toolchains
-        wget -q https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/tools/my_toolchains.tar.gz -O ${{ runner.temp }}/toolchains/my_toolchains.tar.gz
-        tar -xf ${{ runner.temp }}/toolchains/my_toolchains.tar.gz -C ${{ runner.temp }}/toolchains/
+        TOOLCHAIN_ARCHIVE_PATH="tools/my_toolchains.tar.gz" # <--- ADJUST THIS IF YOUR ARCHIVE IS NOT IN 'tools/'
+        DOWNLOAD_URL="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/${TOOLCHAIN_ARCHIVE_PATH}"
+        TEMP_TOOLCHAIN_DIR="${{ runner.temp }}/toolchains"
+        TEMP_CHAIN_ARCHIVE="${TEMP_TOOLCHAIN_DIR}/my_toolchains.tar.gz"
+
+        mkdir -p "${TEMP_TOOLCHAIN_DIR}"
+        echo "Attempting to download toolchains from: ${DOWNLOAD_URL}"
         
-        # Determine the top-level directory created by tar (e.g., 'my_toolchains')
-        TOOLCHAIN_ROOT_DIR=$(find ${{ runner.temp }}/toolchains -maxdepth 1 -mindepth 1 -type d -name "my_toolchains" -print -quit || find ${{ runner.temp }}/toolchains -maxdepth 1 -mindepth 1 -type d -print -quit)
+        # Download the toolchain archive
+        wget -q "${DOWNLOAD_URL}" -O "${TEMP_CHAIN_ARCHIVE}"
         
-        if [ -z "$TOOLCHAIN_ROOT_DIR" ]; then
-          echo "Error: Toolchain directory not found after extraction."
+        # Check if download was successful and file exists
+        if [ ! -f "${TEMP_CHAIN_ARCHIVE}" ]; then
+          echo "ERROR: Toolchain archive '${TEMP_CHAIN_ARCHIVE}' was not downloaded. Check URL and file existence."
           exit 1
         fi
+        
+        echo "Toolchain archive downloaded successfully. File size:"
+        ls -lh "${TEMP_CHAIN_ARCHIVE}"
 
+        echo "Attempting to extract toolchains to: ${TEMP_TOOLCHAIN_DIR}"
+        # Extract the toolchain archive
+        tar -xf "${TEMP_CHAIN_ARCHIVE}" -C "${TEMP_TOOLCHAIN_DIR}"
+
+        # Determine the top-level directory created by tar (e.g., 'my_toolchains')
+        # This assumes the tarball unpacks into a single root directory inside TEMP_TOOLCHAIN_DIR
+        TOOLCHAIN_ROOT_DIR=$(find "${TEMP_TOOLCHAIN_DIR}" -maxdepth 1 -mindepth 1 -type d -print -quit)
+        
+        if [ -z "$TOOLCHAIN_ROOT_DIR" ]; then
+          echo "Error: Toolchain directory not found after extraction. Check the contents of your .tar.gz file."
+          ls -l "${TEMP_TOOLCHAIN_DIR}" # Show contents of temp dir
+          exit 1
+        fi
+        
+        echo "Toolchains extracted to: ${TOOLCHAIN_ROOT_DIR}"
+        ls -l "${TOOLCHAIN_ROOT_DIR}" # List contents of extracted dir
+        
         # Add toolchain bins to PATH
         # Adjust these paths based on how your toolchain archive is structured
+        # Example: If your clang is at my_toolchains/clang-r383902b/bin
         echo "${TOOLCHAIN_ROOT_DIR}/clang-r383902b/bin" >> $GITHUB_PATH
         echo "${TOOLCHAIN_ROOT_DIR}/aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
         echo "${TOOLCHAIN_ROOT_DIR}/arm-none-linux-gnueabihf/bin" >> $GITHUB_PATH
         
         echo "TOOLCHAIN_ROOT_DIR=${TOOLCHAIN_ROOT_DIR}" >> $GITHUB_ENV
         echo "Custom toolchains set up and added to PATH."
-        ls -l "${TOOLCHAIN_ROOT_DIR}/clang-r383902b/bin" # Verify clang is there
-        ls -l "${TOOLCHAIN_ROOT_DIR}/aarch64-none-linux-gnu/bin" # Verify aarch64 gcc is there
+        
+        # Verify compilers are found
+        aarch64-none-linux-gnu-gcc --version || echo "aarch64-none-linux-gnu-gcc not found in PATH."
+        arm-none-linux-gnueabihf-gcc --version || echo "arm-none-linux-gnueabihf-gcc not found in PATH."
+        clang --version || echo "clang not found in PATH."
 
     - name: Install Build Dependencies
       run: |
@@ -77,11 +106,8 @@ jobs:
     - name: Build Kernel and Modules
       working-directory: ${{ env.KERNEL_DIR }}
       run: |
-        # Explicitly setting KBUILD_COMPILER_STRING if your clang requires it
-        # Sometimes KBUILD_COMPILER_STRING is needed to trick the kernel build
-        # if the compiler name doesn't match what it expects.
-        # Check your successful local build logs for what KBUILD_COMPILER_STRING might be set to.
-        # Example: KBUILD_COMPILER_STRING="Android Clang 11.0.1"
+        # Optional: Set KBUILD_COMPILER_STRING if your kernel build requires it for your specific clang version.
+        # Example: make O=out KBUILD_COMPILER_STRING="Android Clang 11.0.1" ${{ env.MAKEFLAGS }}
         make O=out ${{ env.MAKEFLAGS }}
 
     - name: Create Kernel Image and Modules Archive
@@ -89,9 +115,10 @@ jobs:
       run: |
         # The actual kernel image name might vary slightly (e.g., Image.gz, Image.lz4)
         # Verify 'ls out/arch/${{ env.ARCH }}/boot/' to find the correct name if 'Image' fails.
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image out/modules_install_dir || \
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.gz out/modules_install_dir || \
-        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.lz4 out/modules_install_dir
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image || \
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.gz || \
+        tar -czvf kernel_artifacts.tar.gz -C out/ arch/${{ env.ARCH }}/boot/Image.lz4 || \
+        (echo "ERROR: Kernel Image not found. Check out/arch/${{ env.ARCH }}/boot/ directory." && exit 1)
 
     - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4

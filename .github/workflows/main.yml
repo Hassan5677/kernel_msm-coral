@@ -1,4 +1,4 @@
-name: Build Pixel 4 Kernel (Floral)
+name: Build Pixel 4 Kernel (floral)
 
 on:
   push:
@@ -20,7 +20,8 @@ jobs:
           bc bison build-essential ccache curl flex git \
           libncurses5-dev libssl-dev libelf-dev lzop python3 unzip zip \
           gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
-          libstdc++6 python-is-python3
+          binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+          llvm lld
 
     - name: Download Clang Toolchain
       run: |
@@ -37,15 +38,15 @@ jobs:
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
 
-    - name: Build Kernel
+    - name: Build Kernel (Force ld.lld, Avoid gold)
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CC=clang
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
 
-    - name: Upload Kernel Image
+    - name: Upload Image.gz-dtb
       uses: actions/upload-artifact@v4
       with:
         name: Image.gz-dtb

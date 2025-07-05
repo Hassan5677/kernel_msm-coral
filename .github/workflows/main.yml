@@ -26,7 +26,7 @@ jobs:
     - name: Download Clang Toolchain
       run: |
         mkdir -p toolchains
-        wget https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
+        wget --no-check-certificate https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
         tar -xf clang-r383902b.tar.gz -C toolchains
         echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r383902b/bin" >> $GITHUB_ENV
 
@@ -62,4 +62,3 @@ jobs:
       with:
         name: Image.gz-dtb
         path: out/arch/arm64/boot/Image.gz-dtb
-        

@@ -74,6 +74,7 @@ jobs:
         if grep -q "print >>" scripts/gcc-wrapper.py; then
           sed -i 's|print >> sys.stderr, \(.*\),|print(\1, file=sys.stderr, end="")|' scripts/gcc-wrapper.py
         fi
+        sed -i 's|print("error, forbidden warning:", file=sys.stderr, end="") m.group(2)|print("error, forbidden warning:", m.group(2), file=sys.stderr)|' scripts/gcc-wrapper.py
 
     - name: Create output directory
       run: mkdir -p "${OUT_DIR}"

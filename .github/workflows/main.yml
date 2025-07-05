@@ -11,7 +11,7 @@ jobs:
 
     steps:
     - name: Checkout Kernel Source
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Dependencies
       run: |
@@ -33,27 +33,26 @@ jobs:
     - name: Setup Output Directory
       run: mkdir -p out
 
-    - name: Kernel Config (floral_defconfig)
+    - name: Configure Kernel (floral_defconfig)
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
-        # Disable VDSO32, compatibility, and module signature verification directly in .config
-        echo "CONFIG_VDSO32=n" >> out/.config
-        echo "CONFIG_COMPAT=n" >> out/.config
-        echo "CONFIG_MODULE_SIG=n" >> out/.config
-        # Ensure the configuration is updated
+        scripts/kconfig/merge_config.sh -O out \
+          out/.config <(echo -e "CONFIG_VDSO32=n\nCONFIG_COMPAT=n\nCONFIG_MODULE_SIG=n")
         make O=out ARCH=arm64 olddefconfig
 
-    - name: Build Kernel (Verbose Output)
+    - name: Build Kernel
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip V=1
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump STRIP=llvm-strip V=1
 
-    - name: Upload Image.gz-dtb
+    - name: Upload Kernel Image
       uses: actions/upload-artifact@v4
       with:
         name: Image.gz-dtb
         path: out/arch/arm64/boot/Image.gz-dtb
+        

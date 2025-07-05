@@ -1,155 +1,140 @@
-name: Kernel Build
+# .github/workflows/kernel_build.yml
+
+name: Custom GrapheneOS MSM-Coral Kernel Build
 
 on:
+  workflow_dispatch: # Allows manual triggering
   push:
-    branches: [ main ]
+    branches:
+      - msm-coral_13 # Trigger on pushes to your specific kernel branch
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - msm-coral_13 # Trigger on pull requests to your specific kernel branch
+
+env:
+  # Environment variables for the build process
+  ARCH: arm64
+  KERNEL_DIR: msm-coral # Adjust if your repo sync places it differently (e.g., kernel/msm-coral)
+  BUILD_CONFIG_PATH: private/msm-google/build.config.coral # VERIFY THIS PATH IN YOUR GRAPHENEOS KERNEL SOURCE
+  # The output artifact name will include the run number and commit SHA
+  ARTIFACT_NAME: kernel-msm-coral-${{ github.run_number }}-${{ github.sha }}
 
 jobs:
-  build_kernel:
-    runs-on: ubuntu-latest
-
-    env:
-      KERNEL_ROOT: ${{ github.workspace }}
-      OUT_DIR: ${{ github.workspace }}/out
-      ARCH: arm64
-      KBUILD_BUILD_USER: "@ravindu644"
-      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
-      CLANG_VER: clang-r383902b
-      GCC64_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-      GCC32_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
-      _defconfig: floral_defconfig
+  build:
+    runs-on: ubuntu-22.04 # Using a recent Ubuntu LTS for better compatibility
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          # Fetch all history for proper git operations (e.g., KERNELRELEASE generation)
+          fetch-depth: 0
 
-      - name: Install Host Requirements
+      - name: Configure Git for Build
         run: |
-          sudo apt update
-          sudo apt install -y --no-install-recommends \
-            git curl flex bison gperf build-essential bc libncurses-dev \
-            device-tree-compiler lz4 xz-utils zstd p7zip-full \
-            python3 python-is-python3 \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
 
-      - name: Add Swap (8 GiB)
+      - name: Install Build Dependencies
         run: |
-          sudo swapoff -a
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
+          sudo apt-get update
+          # Essential build tools for kernel compilation
+          sudo apt-get install -y build-essential libncurses-dev flex bison bc kmod cpio git-lfs libssl-dev libelf-dev python3 python3-pip
+          # Install dtc (Device Tree Compiler)
+          sudo apt-get install -y device-tree-compiler
+          # For LZ4/LZMA/LZO compression tools
+          sudo apt-get install -y lz4 lzma lzop
 
-      - name: Cache Toolchains
-        id: cache-toolchains
+      - name: Set up ccache (Optional, but good for faster rebuilds)
         uses: actions/cache@v4
         with:
-          path: ${{ env.TOOLCHAIN_DIR }}
-          key: ${{ runner.os }}-toolchains-${{ hashFiles('build.sh') }}
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
 
-      - name: Download Clang Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+      - name: Initialize ccache
         run: |
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
-          curl -L \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${{ env.CLANG_VER }}.tar.gz" \
-            | tar -xz -C "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
+          mkdir -p ~/.ccache
+          echo "ccache -s"
+          ccache -M 10G # Set ccache limit to 10GB
+          export USE_CCACHE=1
 
-      - name: Download 64-bit GCC Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+      - name: Determine Kernel Source Directory
+        id: kernel_src_path
         run: |
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc64"
-          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC64_TAR }}" \
-            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc64" --strip-components=1
+          # The repo sync might place the kernel in a subdirectory.
+          # We need to find the actual 'arch' directory to proceed.
+          # This assumes the GrapheneOS kernel repo contains the actual kernel sources directly.
+          if [ -d "$GITHUB_WORKSPACE/arch/arm64" ]; then
+            echo "KERNEL_SRC=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+            echo "::set-output name=path::$GITHUB_WORKSPACE"
+          elif [ -d "$GITHUB_WORKSPACE/${{ env.KERNEL_DIR}}/arch/arm64" ]; then
+            echo "KERNEL_SRC=$GITHUB_WORKSPACE/${{ env.KERNEL_DIR}}" >> $GITHUB_ENV
+            echo "::set-output name=path::$GITHUB_WORKSPACE/${{ env.KERNEL_DIR}}"
+          else
+            echo "Error: Could not find kernel source directory (arch/arm64 not found)."
+            exit 1
+          fi
+          echo "Discovered KERNEL_SRC: ${{ env.KERNEL_SRC }}"
 
-      - name: Download 32-bit GCC Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+      - name: Prepare Kernel Configuration
+        working-directory: ${{ env.KERNEL_SRC }}
         run: |
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc32"
-          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC32_TAR }}" \
-            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc32" --strip-components=1
+          # Copy the default defconfig for coral
+          cp arch/arm64/configs/coral_defconfig .config
 
-      - name: Export Toolchain Paths and Build Variables
+          # --- Apply your specific CONFIG_MODULE_SIG=n change ---
+          echo "Disabling CONFIG_MODULE_SIG..."
+          sed -i 's/^CONFIG_MODULE_SIG=y/CONFIG_MODULE_SIG=n/' .config
+          # Ensure it's not set to 'm' (module) either, if it somehow was
+          sed -i 's/^CONFIG_MODULE_SIG=m/CONFIG_MODULE_SIG=n/' .config
+          
+          # Run olddefconfig to apply new settings and resolve dependencies
+          make olddefconfig
+
+          # Verify the change
+          grep CONFIG_MODULE_SIG .config
+          if ! grep -q "CONFIG_MODULE_SIG=n" .config; then
+            echo "Error: CONFIG_MODULE_SIG=n was not successfully set in .config"
+            exit 1
+          fi
+
+      - name: Build Kernel
+        working-directory: ${{ env.KERNEL_SRC }}
         run: |
-          echo "PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin:$PATH" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/gcc64/bin/aarch64-none-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_DIR }}/gcc32/bin/arm-none-linux-gnueabihf-" >> "$GITHUB_ENV"
-          echo "CC=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin/clang" >> "$GITHUB_ENV"
-          echo "LD=ld.lld" >> "$GITHUB_ENV"
+          echo "Starting kernel build..."
+          # The GrapheneOS build script for coral should handle toolchain setup.
+          # Ensure BUILD_CONFIG_PATH is correct for your GrapheneOS fork.
+          BUILD_CONFIG=${{ env.BUILD_CONFIG_PATH }} ./build/build.sh
 
-      - name: Clean Output Directory
+          # Verify build output
+          if [ ! -f "out/android-msm-coral-4.14-android13/dist/Image.lz4-dtb" ] && \
+             [ ! -f "out/android-msm-coral-4.14-android13/dist/Image.gz-dtb" ] && \
+             [ ! -f "out/android-msm-coral-4.14-android13/dist/Image" ]; then
+            echo "Error: Expected kernel image not found in 'out/android-msm-coral-4.14-android13/dist/'."
+            echo "Listing contents of out/android-msm-coral-4.14-android13/dist/ for debugging:"
+            ls -l out/android-msm-coral-4.14-android13/dist/
+            exit 1
+          fi
+          echo "Kernel build completed successfully."
+
+      - name: Collect Build Artifacts
+        working-directory: ${{ env.KERNEL_SRC }}
         run: |
-          rm -rf "${{ env.OUT_DIR }}"
-          mkdir -p "${{ env.OUT_DIR }}"
+          # Create a directory for artifacts
+          mkdir -p ../kernel_artifacts
+          # Copy relevant files to the artifact directory
+          find out/android-msm-coral-4.14-android13/dist/ -maxdepth 1 -type f -name "Image*" -exec cp {} ../kernel_artifacts/ \;
+          find out/android-msm-coral-4.14-android13/dist/ -maxdepth 1 -type f -name "System.map*" -exec cp {} ../kernel_artifacts/ \;
+          find out/android-msm-coral-4.14-android13/dist/ -maxdepth 1 -type f -name "*.dtb" -exec cp {} ../kernel_artifacts/ \;
+          cp .config ../kernel_artifacts/grapheneos_coral_4.14_config_custom.txt
+          echo "Collected artifacts:"
+          ls -l ../kernel_artifacts/
 
-      - name: Run Defconfig + Enable ThinLTO + LLD
-        run: |
-          make -C "${{ env.KERNEL_ROOT }}" \
-            O="${{ env.OUT_DIR }}" \
-            ARCH="${{ env.ARCH }}" \
-            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
-            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
-            CC="${{ env.CC }}" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
-            LLVM_IAS=1 \
-            LD=ld.lld \
-            -j"$(nproc)" \
-            "${{ env._defconfig }}"
-
-          scripts/config --file "${{ env.OUT_DIR }}/.config" \
-            -d LTO_CLANG_FULL \
-            -e LTO_CLANG_THIN \
-            -e LD_IS_LLD \
-            -d MODULE_SIG_ALL
-
-          yes "" | make -C "${{ env.KERNEL_ROOT }}" \
-            O="${{ env.OUT_DIR }}" olddefconfig
-
-          echo "✅ LTO Status:"
-          grep LTO "${{ env.OUT_DIR }}/.config" || true
-          echo "✅ LD Status:"
-          grep LD "${{ env.OUT_DIR }}/.config" || true
-
-      - name: Build Kernel Image with LTO Fix
-        run: |
-          echo "🧠 Memory usage before LTO:"
-          free -h
-
-          make -C "${{ env.KERNEL_ROOT }}" \
-            O="${{ env.OUT_DIR }}" \
-            ARCH="${{ env.ARCH }}" \
-            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
-            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
-            CC="${{ env.CC }}" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
-            LLVM_IAS=1 \
-            LD=ld.lld \
-            -j"$(nproc)" \
-            Image
-
-          echo "🧠 Memory usage after LTO:"
-          free -h
-
-      - name: Copy Built Image
-        run: |
-          mkdir -p "${{ env.KERNEL_ROOT }}/build/"
-          cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image" "${{ env.KERNEL_ROOT }}/build/"
-
-      - name: Upload Kernel Image as Artifact
+      - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
-          path: ${{ env.KERNEL_ROOT }}/build/Image
-          retention-days: 5
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ github.workspace }}/kernel_artifacts/
+          retention-days: 7 # Keep artifacts for 7 days

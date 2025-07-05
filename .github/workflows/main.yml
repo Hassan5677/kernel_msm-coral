@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📥 Checkout Kernel Source
+    - name: Checkout Kernel Source
       uses: actions/checkout@v4
 
-    - name: 🧰 Install Dependencies
+    - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -23,39 +23,41 @@ jobs:
           binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
           llvm lld wget
 
-    - name: 🧩 Download Clang Toolchain
+    - name: Download Clang Toolchain
       run: |
         mkdir -p toolchains
         wget https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
         tar -xf clang-r383902b.tar.gz -C toolchains
         echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r383902b/bin" >> $GITHUB_ENV
 
-    - name: 🧼 Clean Build Directory
-      run: |
-        make mrproper
-        make O=out clean
-      shell: bash
+    - name: Setup Output Directory
+      run: mkdir -p out
 
-    - name: 📦 Kernel Config (floral_defconfig)
+    - name: Configure Kernel (floral_defconfig)
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
-        echo "CONFIG_VDSO32=n" >> out/.config
-        echo "CONFIG_COMPAT=n" >> out/.config
         echo "CONFIG_MODULE_SIG=n" >> out/.config
+        echo "CONFIG_VDSO32=n" >> out/.config
         make O=out ARCH=arm64 olddefconfig
-      shell: bash
 
-    - name: 🛠️ Build Kernel (Stable with GNU ar)
+    - name: Build Kernel with Full Output
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
-        make -j8 O=out ARCH=arm64 \
+        make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CC=clang LD=ld.lld AR=ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip V=1
-      shell: bash
+          CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+          OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+          V=1 | tee build.log
 
-    - name: 📤 Upload Image.gz-dtb
+    - name: Upload Build Log (for debug)
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: build.log
+
+    - name: Upload Image.gz-dtb
       uses: actions/upload-artifact@v4
       with:
         name: Image.gz-dtb

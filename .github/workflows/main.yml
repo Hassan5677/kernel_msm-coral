@@ -23,15 +23,13 @@ jobs:
       GCC32_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
 
     steps:
-    # ─────────────────────────────── source ───────────────────────────────
     - name: Checkout sources
       uses: actions/checkout@v4
 
-    # ─────────────────────── inject fixed kernel/extable.c ─────────────────
     - name: Inject fixed extable.c
       run: |
         mkdir -p kernel
-        cat > kernel/extable.c <<'EOF'
+        cat << 'EOF' > kernel/extable.c
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/extable.h>
 #include <linux/uaccess.h>
@@ -67,7 +65,6 @@ void __init prepare_exception_table(void)
 }
 EOF
 
-    # ────────────────────────── host dependencies ─────────────────────────
     - name: Install host packages
       run: |
         sudo apt update
@@ -76,7 +73,6 @@ EOF
           libncurses-dev lz4 xz-utils zstd p7zip-full \
           python3 python-is-python3 device-tree-compiler
 
-    # ────────────────────────── toolchain cache ───────────────────────────
     - name: Cache toolchains
       uses: actions/cache@v4
       with:
@@ -100,7 +96,6 @@ EOF
         curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC32_TAR}" \
           | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc32
 
-    # ────────────────── expose LLVM + GCC cross paths ─────────────────────
     - name: Export toolchain paths
       run: |
         echo "PATH=${TOOLCHAIN_DIR}/${CLANG_VER}/bin:$PATH" >> $GITHUB_ENV
@@ -113,7 +108,6 @@ EOF
         echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
         echo "STRIP=llvm-strip" >> $GITHUB_ENV
 
-    # ───────────────────────────── build ───────────────────────────────────
     - name: Create output directory
       run: mkdir -p "${OUT_DIR}"
 
@@ -131,7 +125,6 @@ EOF
           -j${JOBS} \
           Image
 
-    # ───────────────────────── artifacts ──────────────────────────────────
     - name: Upload kernel Image
       uses: actions/upload-artifact@v4
       with:

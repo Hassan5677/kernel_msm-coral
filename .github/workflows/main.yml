@@ -28,15 +28,16 @@ jobs:
           binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
           llvm lld wget
 
-    - name: Download Clang Toolchain
+    - name: Download Stable Clang Toolchain
       run: |
         mkdir -p toolchains
         cd toolchains
-        wget --no-check-certificate https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz 
-        tar -xf clang-r383902b.tar.gz
-        echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r383902b/bin" >> $GITHUB_ENV
+        # Using AOSP r450781d which is known to work well with Android kernels
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r25/clang-r450781d.tar.gz  -O clang.tar.gz
+        tar -xf clang.tar.gz -C ./clang-r450781d
+        echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r450781d/bin" >> $GITHUB_ENV
 
-    - name: Debug: Check Toolchain
+    - name: Debug: Check Toolchain Binaries
       run: |
         ls -la $TOOLCHAIN_PATH
         $TOOLCHAIN_PATH/clang --version

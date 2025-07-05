@@ -83,7 +83,7 @@ def run_gcc():
     except OSError as e:
         result = e.errno
         if result == errno.ENOENT:
-            print >> sys.stderr, args[0] + ':',e.strerror
+            print(args[0] + ':', file=sys.stderr, end="")
             print >> sys.stderr, 'Is your PATH set correctly?'
         else:
             print >> sys.stderr, ' '.join(args), str(e)

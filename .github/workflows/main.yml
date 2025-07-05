@@ -16,7 +16,7 @@ jobs:
       OUT_DIR:       ${{ github.workspace }}/out
       ARCH:          arm64
       DEFCONFIG:     floral_defconfig
-      JOBS:          6              # 6 keeps RAM+disk < 14 GiB
+      JOBS:          6
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
       CLANG_VER:     clang-r383902b
       GCC64_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
@@ -34,9 +34,6 @@ jobs:
           libncurses-dev lz4 xz-utils zstd p7zip-full \
           python3 python-is-python3 device-tree-compiler
 
-    # ───────────────────────────────────────────────────────────────
-    # Toolchains  (cached so we only download once)
-    # ───────────────────────────────────────────────────────────────
     - name: Cache toolchains
       uses: actions/cache@v4
       with:
@@ -60,31 +57,28 @@ jobs:
         curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC32_TAR}" \
           | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc32
 
-    # ───────────────────────────────────────────────────────────────
-    # Expose LLVM toolchain (required for CONFIG_LTO_CLANG)
-    # ───────────────────────────────────────────────────────────────
-    - name: Export tool paths
+    - name: Export toolchain paths
       run: |
         echo "PATH=${TOOLCHAIN_DIR}/${CLANG_VER}/bin:$PATH" >> $GITHUB_ENV
         echo "CROSS_COMPILE=${TOOLCHAIN_DIR}/gcc64/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
         echo "CROSS_COMPILE_ARM32=${TOOLCHAIN_DIR}/gcc32/bin/arm-none-linux-gnueabihf-" >> $GITHUB_ENV
-        # Tell Kbuild to use the LLVM tooling
-        {
-          echo "LLVM=1"
-          echo "LD=ld.lld"
-          echo "AR=llvm-ar"
-          echo "NM=llvm-nm"
-          echo "OBJCOPY=llvm-objcopy"
-          echo "STRIP=llvm-strip"
-        } >> $GITHUB_ENV
+        echo "LLVM=1" >> $GITHUB_ENV
+        echo "LD=ld.lld" >> $GITHUB_ENV
+        echo "AR=llvm-ar" >> $GITHUB_ENV
+        echo "NM=llvm-nm" >> $GITHUB_ENV
+        echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+        echo "STRIP=llvm-strip" >> $GITHUB_ENV
 
-    - name: Prepare output dir
+    - name: Patch gcc-wrapper.py for Python 3
+      run: |
+        if grep -q "print >>" scripts/gcc-wrapper.py; then
+          sed -i 's|print >> sys.stderr, \(.*\),|print(\1, file=sys.stderr, end="")|' scripts/gcc-wrapper.py
+        fi
+
+    - name: Create output directory
       run: mkdir -p "${OUT_DIR}"
 
-    # ───────────────────────────────────────────────────────────────
-    # Build
-    # ───────────────────────────────────────────────────────────────
-    - name: defconfig + disable module signatures
+    - name: Run defconfig and disable module signature
       run: |
         make -C ${KERNEL_ROOT} O=${OUT_DIR} ARCH=${ARCH} ${DEFCONFIG}
         scripts/config --file ${OUT_DIR}/.config -d MODULE_SIG_ALL
@@ -98,10 +92,10 @@ jobs:
           -j${JOBS} \
           Image
 
-    - name: Upload Image
+    - name: Upload kernel Image
       uses: actions/upload-artifact@v4
       with:
-        name: pixel4-kernel-image
+        name: kernel-image
         path: ${{ env.OUT_DIR }}/arch/arm64/boot/Image
         retention-days: 7
         

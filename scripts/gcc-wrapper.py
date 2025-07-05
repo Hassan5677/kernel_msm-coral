@@ -1,4 +1,4 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
@@ -40,7 +40,7 @@ import subprocess
 # force LANG to be set to en_US.UTF-8 to get consistent warnings.
 
 allowed_warnings = set([
- ])
+])
 
 # Capture the name of the object file, can find it.
 ofile = None
@@ -51,7 +51,7 @@ def interpret_warning(line):
     line = line.rstrip('\n')
     m = warning_re.match(line)
     if m and m.group(2) not in allowed_warnings:
-        print >> sys.stderr, "error, forbidden warning:", m.group(2)
+        print("error, forbidden warning:", m.group(2), file=sys.stderr)
 
         # If there is a warning, remove any object if it exists.
         if ofile:
@@ -76,20 +76,21 @@ def run_gcc():
     try:
         proc = subprocess.Popen(args, stderr=subprocess.PIPE)
         for line in proc.stderr:
-            print >> sys.stderr, line,
-            interpret_warning(line)
+            print(line.decode('utf-8'), file=sys.stderr)  # Decode bytes to string
+            interpret_warning(line.decode('utf-8'))
 
         result = proc.wait()
     except OSError as e:
         result = e.errno
         if result == errno.ENOENT:
             print(args[0] + ':', file=sys.stderr, end="")
-            print >> sys.stderr, 'Is your PATH set correctly?'
+            print('Is your PATH set correctly?', file=sys.stderr)
         else:
-            print >> sys.stderr, ' '.join(args), str(e)
+            print(' '.join(args), str(e), file=sys.stderr)
 
     return result
 
 if __name__ == '__main__':
     status = run_gcc()
     sys.exit(status)
+ 

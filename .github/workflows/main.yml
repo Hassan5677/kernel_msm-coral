@@ -33,7 +33,7 @@ jobs:
         mkdir -p toolchains
         cd toolchains
         # Using AOSP r450781d which is known to work well with Android kernels
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r25/clang-r450781d.tar.gz  -O clang.tar.gz
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r25/clang-r450781d.tar.gz -O clang.tar.gz
         tar -xf clang.tar.gz -C ./clang-r450781d
         echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r450781d/bin" >> $GITHUB_ENV
 
@@ -78,8 +78,17 @@ jobs:
         name: Image.gz-dtb
         path: out/arch/arm64/boot/Image.gz-dtb
 
-    - name: Upload dtbo.img (if exists)
-      if: success()
+    - name: Check for dtbo.img existence
+      id: check_dtbo_img
+      run: |
+        if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
+          echo "DTBO_IMG_EXISTS=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "dtbo.img not found, skipping upload."
+        fi
+
+    - name: Upload dtbo.img artifact
+      if: success() && steps.check_dtbo_img.outputs.DTBO_IMG_EXISTS == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: dtbo.img

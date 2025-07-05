@@ -29,7 +29,7 @@ jobs:
     - name: Inject fixed extable.c
       run: |
         mkdir -p kernel
-        cat << 'EOF' > kernel/extable.c
+        printf "%s\n" "\
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/extable.h>
 #include <linux/uaccess.h>
@@ -62,8 +62,7 @@ void __init sort_main_extable(void)
 void __init prepare_exception_table(void)
 {
     main_extable_sort_needed = true;
-}
-EOF
+}" > kernel/extable.c
 
     - name: Install host packages
       run: |
@@ -131,3 +130,4 @@ EOF
         name: kernel-image
         path: ${{ env.OUT_DIR }}/arch/arm64/boot/Image
         retention-days: 7
+        

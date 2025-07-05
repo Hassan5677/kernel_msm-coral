@@ -29,7 +29,7 @@ jobs:
     - name: Inject fixed extable.c
       run: |
         mkdir -p kernel
-        printf "%s\n" "\
+        cat << 'EOF' > kernel/extable.c
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/extable.h>
 #include <linux/uaccess.h>
@@ -62,7 +62,8 @@ void __init sort_main_extable(void)
 void __init prepare_exception_table(void)
 {
     main_extable_sort_needed = true;
-}" > kernel/extable.c
+}
+EOF
 
     - name: Install host packages
       run: |
@@ -76,7 +77,7 @@ void __init prepare_exception_table(void)
       uses: actions/cache@v4
       with:
         path: ${{ env.TOOLCHAIN_DIR }}
-        key: ${{ runner.os }}-${{ env.CLANG_VER }}-${{ hashFiles('.github/workflows/build_kernel.yml') }}
+        key: ${{ runner.os }}-${{ env.CLANG_VER }}-${{ hashFiles('.github/workflows/main.yml') }}
 
     - name: Fetch Clang
       if: steps.cache-toolchains.outputs.cache-hit != 'true'
@@ -86,7 +87,7 @@ void __init prepare_exception_table(void)
           https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${CLANG_VER}.tar.gz \
         | tar -xz -C ${TOOLCHAIN_DIR}/${CLANG_VER}
 
-    - name: Fetch GCC (aarch64/arm32)
+    - name: Fetch GCC (aarch64 / arm32)
       if: steps.cache-toolchains.outputs.cache-hit != 'true'
       run: |
         mkdir -p ${TOOLCHAIN_DIR}/gcc64 ${TOOLCHAIN_DIR}/gcc32
@@ -110,7 +111,7 @@ void __init prepare_exception_table(void)
     - name: Create output directory
       run: mkdir -p "${OUT_DIR}"
 
-    - name: Run defconfig & disable module signatures
+    - name: Run defconfig and disable module signature
       run: |
         make -C ${KERNEL_ROOT} O=${OUT_DIR} ARCH=${ARCH} ${DEFCONFIG}
         scripts/config --file ${OUT_DIR}/.config -d MODULE_SIG_ALL

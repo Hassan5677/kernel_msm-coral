@@ -7,17 +7,22 @@ on:
 
 jobs:
   build:
+    name: Build Kernel
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
 
+    - name: Debug: Git Info
+      run: |
+        git status
+        git log -1
+
     - name: Install Dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential ccache curl flex git \
+        sudo apt update
+        sudo apt install -y bc bison build-essential ccache curl flex \
           libncurses5-dev libssl-dev libelf-dev lzop python3 unzip zip \
           gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
           binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
@@ -26,9 +31,15 @@ jobs:
     - name: Download Clang Toolchain
       run: |
         mkdir -p toolchains
-        wget --no-check-certificate https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz
-        tar -xf clang-r383902b.tar.gz -C toolchains
+        cd toolchains
+        wget --no-check-certificate https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902b.tar.gz 
+        tar -xf clang-r383902b.tar.gz
         echo "TOOLCHAIN_PATH=$GITHUB_WORKSPACE/toolchains/clang-r383902b/bin" >> $GITHUB_ENV
+
+    - name: Debug: Check Toolchain
+      run: |
+        ls -la $TOOLCHAIN_PATH
+        $TOOLCHAIN_PATH/clang --version
 
     - name: Setup Output Directory
       run: mkdir -p out
@@ -37,9 +48,11 @@ jobs:
       run: |
         export PATH=$TOOLCHAIN_PATH:$PATH
         make O=out ARCH=arm64 floral_defconfig
-        echo "CONFIG_MODULE_SIG=n" >> out/.config
-        echo "CONFIG_VDSO32=n" >> out/.config
+        scripts/config --file out/.config --disable MODULE_SIG --disable VDSO32
         make O=out ARCH=arm64 olddefconfig
+
+    - name: Debug: Print Final Config
+      run: cat out/.config
 
     - name: Build Kernel with Full Output
       run: |
@@ -58,7 +71,15 @@ jobs:
         path: build.log
 
     - name: Upload Image.gz-dtb
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: Image.gz-dtb
         path: out/arch/arm64/boot/Image.gz-dtb
+
+    - name: Upload dtbo.img (if exists)
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtbo.img
+        path: out/arch/arm64/boot/dtbo.img

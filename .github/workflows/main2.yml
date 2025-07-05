@@ -2,11 +2,9 @@ name: Kernel Build
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -45,7 +43,7 @@ jobs:
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
 
-      - name: Increase Swap (8 GiB)
+      - name: Add Swap (8 GiB)
         run: |
           sudo swapoff -a
           sudo fallocate -l 8G /swapfile
@@ -89,12 +87,14 @@ jobs:
           echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/gcc64/bin/aarch64-none-linux-gnu-" >> "$GITHUB_ENV"
           echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_DIR }}/gcc32/bin/arm-none-linux-gnueabihf-" >> "$GITHUB_ENV"
           echo "CC=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin/clang" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib:${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "LD=ld.lld" >> "$GITHUB_ENV"
 
-      - name: Create Output Directory
-        run: mkdir -p "${{ env.OUT_DIR }}"
+      - name: Clean Output Directory
+        run: |
+          rm -rf "${{ env.OUT_DIR }}"
+          mkdir -p "${{ env.OUT_DIR }}"
 
-      - name: Run Defconfig and Enable ThinLTO
+      - name: Run Defconfig + Enable ThinLTO + LLD
         run: |
           make -C "${{ env.KERNEL_ROOT }}" \
             O="${{ env.OUT_DIR }}" \
@@ -104,19 +104,29 @@ jobs:
             CC="${{ env.CC }}" \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
             LLVM_IAS=1 \
+            LD=ld.lld \
             -j"$(nproc)" \
             "${{ env._defconfig }}"
 
           scripts/config --file "${{ env.OUT_DIR }}/.config" \
             -d LTO_CLANG_FULL \
             -e LTO_CLANG_THIN \
+            -e LD_IS_LLD \
             -d MODULE_SIG_ALL
 
           yes "" | make -C "${{ env.KERNEL_ROOT }}" \
             O="${{ env.OUT_DIR }}" olddefconfig
 
-      - name: Build Kernel Image
+          echo "✅ LTO Status:"
+          grep LTO "${{ env.OUT_DIR }}/.config" || true
+          echo "✅ LD Status:"
+          grep LD "${{ env.OUT_DIR }}/.config" || true
+
+      - name: Build Kernel Image with LTO Fix
         run: |
+          echo "🧠 Memory usage before LTO:"
+          free -h
+
           make -C "${{ env.KERNEL_ROOT }}" \
             O="${{ env.OUT_DIR }}" \
             ARCH="${{ env.ARCH }}" \
@@ -125,8 +135,12 @@ jobs:
             CC="${{ env.CC }}" \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
             LLVM_IAS=1 \
+            LD=ld.lld \
             -j"$(nproc)" \
             Image
+
+          echo "🧠 Memory usage after LTO:"
+          free -h
 
       - name: Copy Built Image
         run: |

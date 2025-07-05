@@ -30,8 +30,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4 # Action to check out your repository code
 
-      # Removed the 'Get Number of CPU Cores' step as _jobs is now fixed.
-
       - name: Set up Java 17
         uses: actions/setup-java@v4 # Action to set up Java Development Kit
         with:
@@ -95,7 +93,6 @@ jobs:
           echo "CC=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin/clang" >> "$GITHUB_ENV"
           # Append to LD_LIBRARY_PATH, handling if it's empty
           echo "LD_LIBRARY_PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib:${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-          # _jobs is now set directly in the 'env' section for the job.
 
       - name: Create Output Directory
         run: mkdir -p "${{ env.OUT_DIR }}"
@@ -110,7 +107,7 @@ jobs:
             CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
             CC="${{ env.CC }}" \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
-            HOSTLDLIBS="-lyaml" \
+            LLVM_IAS=1 \
             -j"${{ env._jobs }}" \
             "${{ env._defconfig }}"
           # Disable module signature checking
@@ -126,7 +123,7 @@ jobs:
             CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
             CC="${{ env.CC }}" \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
-            HOSTLDLIBS="-lyaml" \
+            LLVM_IAS=1 \
             -j"${{ env._jobs }}" \
             Image
 

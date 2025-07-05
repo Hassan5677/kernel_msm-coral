@@ -2,140 +2,106 @@ name: Kernel Build
 
 on:
   push:
-    branches:
-      - main # Trigger on pushes to the main branch
+    branches: [ main ]
   pull_request:
-    branches:
-      - main # Trigger on pull requests targeting the main branch
-  workflow_dispatch: # Allow manual triggering of the workflow
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build_kernel:
-    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+    runs-on: ubuntu-latest
 
     env:
-      # Define base paths and metadata as environment variables for the job
-      KERNEL_ROOT: ${{ github.workspace }} # GitHub workspace is the root of the cloned repository
-      OUT_DIR: ${{ github.workspace }}/out
-      ARCH: arm64
-      KBUILD_BUILD_USER: "@ravindu644"
-      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains # Toolchains will be downloaded here
-      CLANG_VER: clang-r383902b
-      GCC64_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-      GCC32_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
-      _defconfig: floral_defconfig # Kernel defconfig to use
-      _jobs: 8 # Fixed number of parallel jobs to reduce "broken pipe" errors
+      KERNEL_ROOT:   ${{ github.workspace }}
+      OUT_DIR:       ${{ github.workspace }}/out
+      ARCH:          arm64
+      DEFCONFIG:     floral_defconfig
+      JOBS:          6              # 6 keeps RAM+disk < 14 GiB
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
+      CLANG_VER:     clang-r383902b
+      GCC64_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+      GCC32_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4 # Action to check out your repository code
+    - name: Checkout sources
+      uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4 # Action to set up Java Development Kit
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+    - name: Install host packages
+      run: |
+        sudo apt update
+        sudo apt install -y --no-install-recommends \
+          git curl flex bison gperf build-essential bc \
+          libncurses-dev lz4 xz-utils zstd p7zip-full \
+          python3 python-is-python3 device-tree-compiler
 
-      - name: Install Host Requirements
-        run: |
-          echo "[INFO] Installing host requirements…"
-          sudo apt update
-          sudo apt install -y --no-install-recommends \
-            git curl flex bison gperf build-essential bc libncurses-dev \
-            device-tree-compiler lz4 xz-utils zstd p7zip-full \
-            python3 python-is-python3 \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
-        # The .requirements file logic is replaced by simply running apt install every time.
-        # This ensures all dependencies are always present on the fresh runner.
+    # ───────────────────────────────────────────────────────────────
+    # Toolchains  (cached so we only download once)
+    # ───────────────────────────────────────────────────────────────
+    - name: Cache toolchains
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.TOOLCHAIN_DIR }}
+        key: ${{ runner.os }}-${{ env.CLANG_VER }}-${{ hashFiles('.github/workflows/build_kernel.yml') }}
 
-      - name: Cache Toolchains
-        id: cache-toolchains # Give this step an ID to check if cache hit
-        uses: actions/cache@v4 # Action to cache files
-        with:
-          path: ${{ env.TOOLCHAIN_DIR }} # Path to cache
-          key: ${{ runner.os }}-toolchains-${{ hashFiles('build.sh') }} # Cache key based on OS and a hash of build.sh
-          # This ensures the cache is invalidated if the build script (and thus toolchain URLs) changes.
+    - name: Fetch Clang
+      if: steps.cache-toolchains.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ${TOOLCHAIN_DIR}/${CLANG_VER}
+        curl -L \
+          https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${CLANG_VER}.tar.gz \
+        | tar -xz -C ${TOOLCHAIN_DIR}/${CLANG_VER}
 
-      - name: Download Clang Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true' # Only run if cache miss
-        run: |
-          echo "[INFO] Fetching ${{ env.CLANG_VER }} …"
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
-          curl -L \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${{ env.CLANG_VER }}.tar.gz" \
-            | tar -xz -C "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
+    - name: Fetch GCC (aarch64 / arm32)
+      if: steps.cache-toolchains.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ${TOOLCHAIN_DIR}/gcc64 ${TOOLCHAIN_DIR}/gcc32
+        curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC64_TAR}" \
+          | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc64
+        curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC32_TAR}" \
+          | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc32
 
-      - name: Download 64-bit GCC Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true' # Only run if cache miss
-        run: |
-          echo "[INFO] Fetching 64‑bit GCC …"
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc64"
-          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC64_TAR }}" \
-            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc64" --strip-components=1
+    # ───────────────────────────────────────────────────────────────
+    # Expose LLVM toolchain (required for CONFIG_LTO_CLANG)
+    # ───────────────────────────────────────────────────────────────
+    - name: Export tool paths
+      run: |
+        echo "PATH=${TOOLCHAIN_DIR}/${CLANG_VER}/bin:$PATH" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=${TOOLCHAIN_DIR}/gcc64/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=${TOOLCHAIN_DIR}/gcc32/bin/arm-none-linux-gnueabihf-" >> $GITHUB_ENV
+        # Tell Kbuild to use the LLVM tooling
+        {
+          echo "LLVM=1"
+          echo "LD=ld.lld"
+          echo "AR=llvm-ar"
+          echo "NM=llvm-nm"
+          echo "OBJCOPY=llvm-objcopy"
+          echo "STRIP=llvm-strip"
+        } >> $GITHUB_ENV
 
-      - name: Download 32-bit GCC Toolchain
-        if: steps.cache-toolchains.outputs.cache-hit != 'true' # Only run if cache miss
-        run: |
-          echo "[INFO] Fetching 32‑bit GCC …"
-          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc32"
-          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC32_TAR }}" \
-            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc32" --strip-components=1
+    - name: Prepare output dir
+      run: mkdir -p "${OUT_DIR}"
 
-      - name: Export Toolchain Paths and Build Variables
-        run: |
-          echo "[INFO] Exporting toolchain paths and build variables…"
-          # Export PATH for all subsequent steps in this job
-          echo "PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin:$PATH" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/gcc64/bin/aarch64-none-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_DIR }}/gcc32/bin/arm-none-linux-gnueabihf-" >> "$GITHUB_ENV"
-          echo "CC=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin/clang" >> "$GITHUB_ENV"
-          # Append to LD_LIBRARY_PATH, handling if it's empty
-          echo "LD_LIBRARY_PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib:${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+    # ───────────────────────────────────────────────────────────────
+    # Build
+    # ───────────────────────────────────────────────────────────────
+    - name: defconfig + disable module signatures
+      run: |
+        make -C ${KERNEL_ROOT} O=${OUT_DIR} ARCH=${ARCH} ${DEFCONFIG}
+        scripts/config --file ${OUT_DIR}/.config -d MODULE_SIG_ALL
 
-      - name: Create Output Directory
-        run: mkdir -p "${{ env.OUT_DIR }}"
+    - name: Build Image
+      run: |
+        make -C ${KERNEL_ROOT} \
+          O=${OUT_DIR} \
+          ARCH=${ARCH} \
+          LLVM_IAS=1 \
+          -j${JOBS} \
+          Image
 
-      - name: Run Defconfig and Disable Module Signature
-        run: |
-          echo "[INFO] 1️⃣ Defconfig (${{ env._defconfig }}) and disabling module signature…"
-          make -C "${{ env.KERNEL_ROOT }}" \
-            O="${{ env.OUT_DIR }}" \
-            ARCH="${{ env.ARCH }}" \
-            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
-            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
-            CC="${{ env.CC }}" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
-            LLVM_IAS=1 \
-            -j"${{ env._jobs }}" \
-            "${{ env._defconfig }}"
-          # Disable module signature checking
-          echo "CONFIG_MODULE_SIG_ALL=n" >> "${{ env.OUT_DIR }}/.config"
-
-      - name: Build Image
-        run: |
-          echo "[INFO] 2️⃣ Image"
-          make -C "${{ env.KERNEL_ROOT }}" \
-            O="${{ env.OUT_DIR }}" \
-            ARCH="${{ env.ARCH }}" \
-            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
-            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
-            CC="${{ env.CC }}" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
-            LLVM_IAS=1 \
-            -j"${{ env._jobs }}" \
-            Image
-
-      - name: Copy Built Image
-        run: |
-          echo "[INFO] Copying built Image to build/ directory…"
-          mkdir -p "${{ env.KERNEL_ROOT }}/build/" # Ensure the build directory exists
-          cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image" "${{ env.KERNEL_ROOT }}/build/"
-
-      - name: Upload Kernel Image as Artifact
-        uses: actions/upload-artifact@v4 # Action to upload build artifacts
-        with:
-          name: kernel-image # Name of the artifact
-          path: ${{ env.KERNEL_ROOT }}/build/Image # Path to the file to upload
-          retention-days: 5 # How long to keep the artifact
+    - name: Upload Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: pixel4-kernel-image
+        path: ${{ env.OUT_DIR }}/arch/arm64/boot/Image
+        retention-days: 7
+        

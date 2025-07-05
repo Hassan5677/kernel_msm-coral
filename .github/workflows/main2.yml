@@ -1,0 +1,141 @@
+name: Kernel Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build_kernel:
+    runs-on: ubuntu-latest
+
+    env:
+      KERNEL_ROOT: ${{ github.workspace }}
+      OUT_DIR: ${{ github.workspace }}/out
+      ARCH: arm64
+      KBUILD_BUILD_USER: "@ravindu644"
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
+      CLANG_VER: clang-r383902b
+      GCC64_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+      GCC32_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
+      _defconfig: floral_defconfig
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Host Requirements
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            git curl flex bison gperf build-essential bc libncurses-dev \
+            device-tree-compiler lz4 xz-utils zstd p7zip-full \
+            python3 python-is-python3 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabihf
+
+      - name: Increase Swap (8 GiB)
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Cache Toolchains
+        id: cache-toolchains
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLCHAIN_DIR }}
+          key: ${{ runner.os }}-toolchains-${{ hashFiles('build.sh') }}
+
+      - name: Download Clang Toolchain
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
+          curl -L \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${{ env.CLANG_VER }}.tar.gz" \
+            | tar -xz -C "${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}"
+
+      - name: Download 64-bit GCC Toolchain
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc64"
+          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC64_TAR }}" \
+            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc64" --strip-components=1
+
+      - name: Download 32-bit GCC Toolchain
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ env.TOOLCHAIN_DIR }}/gcc32"
+          curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${{ env.GCC32_TAR }}" \
+            | tar -xJ -C "${{ env.TOOLCHAIN_DIR }}/gcc32" --strip-components=1
+
+      - name: Export Toolchain Paths and Build Variables
+        run: |
+          echo "PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin:$PATH" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/gcc64/bin/aarch64-none-linux-gnu-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_DIR }}/gcc32/bin/arm-none-linux-gnueabihf-" >> "$GITHUB_ENV"
+          echo "CC=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/bin/clang" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib:${{ env.TOOLCHAIN_DIR }}/${{ env.CLANG_VER }}/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Create Output Directory
+        run: mkdir -p "${{ env.OUT_DIR }}"
+
+      - name: Run Defconfig and Enable ThinLTO
+        run: |
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.OUT_DIR }}" \
+            ARCH="${{ env.ARCH }}" \
+            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
+            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
+            CC="${{ env.CC }}" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            "${{ env._defconfig }}"
+
+          scripts/config --file "${{ env.OUT_DIR }}/.config" \
+            -d LTO_CLANG_FULL \
+            -e LTO_CLANG_THIN \
+            -d MODULE_SIG_ALL
+
+          yes "" | make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.OUT_DIR }}" olddefconfig
+
+      - name: Build Kernel Image
+        run: |
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.OUT_DIR }}" \
+            ARCH="${{ env.ARCH }}" \
+            CROSS_COMPILE="${{ env.CROSS_COMPILE }}" \
+            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}" \
+            CC="${{ env.CC }}" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image
+
+      - name: Copy Built Image
+        run: |
+          mkdir -p "${{ env.KERNEL_ROOT }}/build/"
+          cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image" "${{ env.KERNEL_ROOT }}/build/"
+
+      - name: Upload Kernel Image as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: ${{ env.KERNEL_ROOT }}/build/Image
+          retention-days: 5

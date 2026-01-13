@@ -1,79 +1,122 @@
-name: Build Kernel (4.9 - crDroid)
+name: Kernel Build2
+
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 6"
-  push:
-    branches:
-      - HEAD
-  pull_request:
-    branches:
-      - HEAD
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_MAXSIZE: "2G"
-      CCACHE_HARDLINK: "true"
-      KERNEL_DEFCONFIG: "floral_defconfig"
-      KERNEL_CMDLINE: "ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: "true"
-          fetch-depth: 100
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
 
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+    - name: Clone toolchains
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/toolchains
+        cd $GITHUB_WORKSPACE/toolchains
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b -b lineage-20.0 clang
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9   -b lineage-19.1 gcc64
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9     -b lineage-19.1 gcc32
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y 
-          sudo apt install gcc-aarch64-linux-gnu -y
-          sudo apt install gcc-arm-linux-gnueabi -y
-          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
-          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s Y
+    - name: ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ccache-kernel-${{ runner.os }}-${{ github.sha }}
+        restore-keys: ccache-kernel-${{ runner.os }}-
+
+    - name: Install build deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ccache bc bison flex libssl-dev libelf-dev
+
+    - name: Set up MemKernel as module (M-OUT)
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s Y
+
+    - name: Configure kernel
+      run: |
+        export ARCH=arm64 SUBARCH=arm64
+        export CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang
+        export GCC64_DIR=$GITHUB_WORKSPACE/toolchains/gcc64
+        export GCC32_DIR=$GITHUB_WORKSPACE/toolchains/gcc32
+
+        export PATH=$CLANG_DIR/bin:$PATH
+        export LD_LIBRARY_PATH=$CLANG_DIR/lib:$LD_LIBRARY_PATH
+
+        export LLVM=1
+        export CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-
+        export CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export SKIP_ABI_CHECKS=true
+
+        export CCACHE_DIR=~/.ccache
+        ccache -M 5G
+        ccache -z
+
+        mkdir -p out
+        make O=out LOCALVERSION=-MemKernel floral_defconfig
+
+        ./scripts/config --file out/.config \
+          --disable CONFIG_DTB_OVERLAY \
+          --disable CONFIG_BUILD_ARM64_DT_OVERLAY \
+          --enable  CONFIG_LTO_NONE \
+          --disable CONFIG_LTO_CLANG \
+          --disable CONFIG_LTO \
+          --disable CONFIG_THINLTO \
+
           
-          # Gunakan Google Clang
-          mkdir google-clang && cd google-clang
-          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz        
-          tar -xf clang-r536225.tar.gz
-          cd ..
+          
+         ./scripts/config --file out/.config \
+          --disable CONFIG_MODULE_SIG \
+          --disable CONFIG_MODULE_SIG_FORCE \
+          --disable CONFIG_MODULE_SIG_ALL \
+          --disable CONFIG_MODULE_SIG_SHA256 \
+          --disable CONFIG_MODULE_SIG_KEY \
 
-          # AnyKernel setup
-          git clone https://github.com/osm0sis/AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
-          rm -rf AnyKernel3/.git* AnyKernel3/README.md
 
-          # Mem module
-          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M vinn
 
-      - name: GetTime
-        id: get_time
-        run: echo "TIME=$(TZ=UTC+3 date +%s )" >> $GITHUB_OUTPUT
+        make O=out LOCALVERSION=-MemKernel olddefconfig
 
-      - name: Build Kernel-With-KernelSU
-        run: |
-          export PATH=$(pwd)/google-clang/bin/:$PATH
-          make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang"
-          make $KERNEL_CMDLINE CC="ccache clang" -j$(nproc --all)
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3
+    - name: Build kernel
+      run: |
+        export ARCH=arm64 SUBARCH=arm64
+        export CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang
+        export GCC64_DIR=$GITHUB_WORKSPACE/toolchains/gcc64
+        export GCC32_DIR=$GITHUB_WORKSPACE/toolchains/gcc32
 
-      - name: Upload Kernel-SU
-        uses: actions/upload-artifact@v4
-        with:
-          name: Nyan_kernel-KSU-${{ steps.get_time.outputs.TIME }}
-          path: "AnyKernel3/*"
+        export PATH=$CLANG_DIR/bin:$PATH
+        export LD_LIBRARY_PATH=$CLANG_DIR/lib:$LD_LIBRARY_PATH
 
-      - name: Upload mem module
-        uses: actions/upload-artifact@v4
-        with:
-          name: memodule
-          path: "./out/drivers/memkernel/vinn_memk.ko"
+        export LLVM=1
+        export CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-
+        export CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export CCACHE_DIR=~/.ccache
+        export CCACHE_COMPILERCHECK=content
+
+        # reduce link-time memory
+        export LDFLAGS="-Wl,--no-keep-memory -Wl,--reduce-memory-overheads"
+
+        touch .scmversion
+
+        # 1. compile in parallel  2. link single-threaded  3. modules in parallel
+        make -C . O=out CC=clang LD=ld.lld LOCALVERSION=-MemKernel -j$(nproc)
+        make -C . O=out CC=clang LD=ld.lld LOCALVERSION=-MemKernel -j1 vmlinux
+        make -C . O=out CC=clang LD=ld.lld LOCALVERSION=-MemKernel -j$(nproc) modules
+
+        ccache -s
+
+    - name: Collect artifacts
+      run: |
+        # device-tree name varies; grab any that was built
+        mkdir -p $GITHUB_WORKSPACE/artifacts
+        cp out/arch/arm64/boot/Image* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+        find out -name "*.ko" -exec cp {} $GITHUB_WORKSPACE/artifacts/ \;
+
+    - name: Upload kernel and modules
+      uses: actions/upload-artifact@v4
+      with:
+        name: compiled-kernel
+        path: artifacts/*

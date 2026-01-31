@@ -1,134 +1,154 @@
-name: Kernel Build
+name: Kernel Build2
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build_kernel:
+  build:
     runs-on: ubuntu-latest
 
-    env:
-      KERNEL_ROOT:   ${{ github.workspace }}
-      OUT_DIR:       ${{ github.workspace }}/out
-      ARCH:          arm64
-      DEFCONFIG:     floral_defconfig
-      JOBS:          6
-      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
-      CLANG_VER:     clang-r383902b
-      GCC64_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-      GCC32_TAR:     arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz
-
     steps:
-    - name: Checkout sources
+    - name: Checkout kernel source
       uses: actions/checkout@v4
 
-    - name: Inject fixed extable.c
+    - name: Remove KernelSU references (if not used)
       run: |
-        mkdir -p kernel
-        cat << 'EOF' > kernel/extable.c
-// SPDX-License-Identifier: GPL-2.0-only
-#include <linux/extable.h>
-#include <linux/uaccess.h>
-#include <linux/sort.h>
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
+        # Remove kernelsu line from drivers/Kconfig to prevent build error
+        if [ -f drivers/Kconfig ]; then
+          sed -i '/source "drivers\/kernelsu\/Kconfig"/d' drivers/Kconfig
+          echo "Removed KernelSU reference from drivers/Kconfig"
+        fi
 
-extern struct exception_table_entry __start___ex_table[];
-extern struct exception_table_entry __stop___ex_table[];
-
-static bool main_extable_sort_needed __initdata;
-
-static int cmp_ex(const void *a, const void *b)
-{
-    const struct exception_table_entry *x = a, *y = b;
-    return x->insn - y->insn;
-}
-
-void __init sort_main_extable(void)
-{
-    if (main_extable_sort_needed && &__stop___ex_table[0] > &__start___ex_table[0]) {
-        sort(__start___ex_table,
-             __stop___ex_table - __start___ex_table,
-             sizeof(struct exception_table_entry),
-             cmp_ex, NULL);
-    }
-}
-
-void __init prepare_exception_table(void)
-{
-    main_extable_sort_needed = true;
-}
-EOF
-
-    - name: Install host packages
+    - name: Clone toolchains
       run: |
-        sudo apt update
-        sudo apt install -y --no-install-recommends \
-          git curl flex bison gperf build-essential bc \
-          libncurses-dev lz4 xz-utils zstd p7zip-full \
-          python3 python-is-python3 device-tree-compiler
+        mkdir -p $GITHUB_WORKSPACE/toolchains
+        cd $GITHUB_WORKSPACE/toolchains
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b -b lineage-20.0 clang
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b lineage-19.1 gcc64
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b lineage-19.1 gcc32
 
-    - name: Cache toolchains
+    - name: Setup swap space (8GB)
+      run: |
+        sudo swapoff -a
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        sudo swapon --show
+        free -h
+
+    - name: ccache
       uses: actions/cache@v4
       with:
-        path: ${{ env.TOOLCHAIN_DIR }}
-        key: ${{ runner.os }}-${{ env.CLANG_VER }}-${{ hashFiles('.github/workflows/main.yml') }}
+        path: ~/.ccache
+        key: ccache-kernel-${{ runner.os }}-${{ github.sha }}
+        restore-keys: ccache-kernel-${{ runner.os }}-
 
-    - name: Fetch Clang
-      if: steps.cache-toolchains.outputs.cache-hit != 'true'
+    - name: Install build deps
       run: |
-        mkdir -p ${TOOLCHAIN_DIR}/${CLANG_VER}
-        curl -L \
-          https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/${CLANG_VER}.tar.gz \
-        | tar -xz -C ${TOOLCHAIN_DIR}/${CLANG_VER}
+        sudo apt-get update
+        sudo apt-get install -y ccache bc bison flex libssl-dev libelf-dev
 
-    - name: Fetch GCC (aarch64 / arm32)
-      if: steps.cache-toolchains.outputs.cache-hit != 'true'
+    - name: Configure kernel
       run: |
-        mkdir -p ${TOOLCHAIN_DIR}/gcc64 ${TOOLCHAIN_DIR}/gcc32
-        curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC64_TAR}" \
-          | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc64
-        curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/${GCC32_TAR}" \
-          | tar -xJ --strip-components=1 -C ${TOOLCHAIN_DIR}/gcc32
+        export ARCH=arm64 SUBARCH=arm64
+        export CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang
+        export GCC64_DIR=$GITHUB_WORKSPACE/toolchains/gcc64
+        export GCC32_DIR=$GITHUB_WORKSPACE/toolchains/gcc32
 
-    - name: Export toolchain paths
+        export PATH=$CLANG_DIR/bin:$PATH
+        export LD_LIBRARY_PATH=$CLANG_DIR/lib:$LD_LIBRARY_PATH
+
+        export LLVM=1
+        export CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-
+        export CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export SKIP_ABI_CHECKS=true
+
+        export CCACHE_DIR=~/.ccache
+        ccache -M 5G
+        ccache -z
+
+        mkdir -p out
+        
+        # Use the defconfig
+        make O=out floral_defconfig
+
+        # Enable ThinLTO for better performance (saves RAM vs Full LTO)
+        ./scripts/config --file out/.config \
+          --disable CONFIG_LTO_NONE \
+          --enable CONFIG_LTO_CLANG \
+          --enable CONFIG_THINLTO \
+          --disable CONFIG_LTO_CLANG_FULL \
+          --disable CONFIG_DEBUG_INFO \
+          --disable CONFIG_DEBUG_INFO_DWARF4 \
+          --disable CONFIG_DEBUG_INFO_DWARF5 \
+          --disable CONFIG_MODULE_SIG \
+          --disable CONFIG_MODULE_SIG_FORCE \
+          --disable CONFIG_MODULE_SIG_ALL \
+          --disable CONFIG_MODULE_SIG_SHA256 \
+          --disable CONFIG_MODULE_SIG_KEY \
+          --disable CONFIG_DYNAMIC_DEBUG \
+          --disable CONFIG_LKDTM \
+          --disable CONFIG_CORESIGHT \
+          --disable CONFIG_KSU \
+          --disable CONFIG_KSU_DEBUG
+
+        make O=out olddefconfig
+
+    - name: Build kernel
       run: |
-        echo "PATH=${TOOLCHAIN_DIR}/${CLANG_VER}/bin:$PATH" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=${TOOLCHAIN_DIR}/gcc64/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
-        echo "CROSS_COMPILE_ARM32=${TOOLCHAIN_DIR}/gcc32/bin/arm-none-linux-gnueabihf-" >> $GITHUB_ENV
-        echo "LLVM=1" >> $GITHUB_ENV
-        echo "LD=ld.lld" >> $GITHUB_ENV
-        echo "AR=llvm-ar" >> $GITHUB_ENV
-        echo "NM=llvm-nm" >> $GITHUB_ENV
-        echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-        echo "STRIP=llvm-strip" >> $GITHUB_ENV
+        export ARCH=arm64 SUBARCH=arm64
+        export CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang
+        export GCC64_DIR=$GITHUB_WORKSPACE/toolchains/gcc64
+        export GCC32_DIR=$GITHUB_WORKSPACE/toolchains/gcc32
 
-    - name: Create output directory
-      run: mkdir -p "${OUT_DIR}"
+        export PATH=$CLANG_DIR/bin:$PATH
+        export LD_LIBRARY_PATH=$CLANG_DIR/lib:$LD_LIBRARY_PATH
 
-    - name: Run defconfig and disable module signature
+        export LLVM=1
+        export CROSS_COMPILE=$GCC64_DIR/bin/aarch64-linux-android-
+        export CROSS_COMPILE_ARM32=$GCC32_DIR/bin/arm-linux-androideabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export CCACHE_DIR=~/.ccache
+        export CCACHE_COMPILERCHECK=content
+        export PLATFORM_VERSION=13.0
+        
+        # Reduce linker memory usage during ThinLTO link stage
+        export LDFLAGS="-Wl,--no-keep-memory -Wl,--reduce-memory-overheads"
+
+        touch .scmversion
+
+        # Build with ThinLTO - uses less RAM than Full LTO
+        # -j2 is safer for GitHub Actions to prevent OOM during final link
+        make -j2 O=out CC=clang LD=ld.lld
+        
+        ccache -s
+
+    - name: Collect artifacts
       run: |
-        make -C ${KERNEL_ROOT} O=${OUT_DIR} ARCH=${ARCH} ${DEFCONFIG}
-        scripts/config --file ${OUT_DIR}/.config -d MODULE_SIG_ALL
+        mkdir -p $GITHUB_WORKSPACE/artifacts
+        
+        # Pixel 4 (floral) typically outputs Image.gz-dtb
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/artifacts/
+          echo "Found Image.gz-dtb"
+        elif [ -f out/arch/arm64/boot/Image.gz ]; then
+          cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/artifacts/
+          echo "Found Image.gz"
+        elif [ -f out/arch/arm64/boot/Image ]; then
+          cp out/arch/arm64/boot/Image $GITHUB_WORKSPACE/artifacts/
+          echo "Found Image"
+        fi
+        
+        # Copy modules (if any are built as modules)
+        find out -name "*.ko" -exec cp {} $GITHUB_WORKSPACE/artifacts/ \; 2>/dev/null || true
+        
+        # List what we found
+        ls -lh $GITHUB_WORKSPACE/artifacts/
 
-    - name: Build Image
-      run: |
-        make -C ${KERNEL_ROOT} \
-          O=${OUT_DIR} \
-          ARCH=${ARCH} \
-          LLVM_IAS=1 \
-          -j${JOBS} \
-          Image
-
-    - name: Upload kernel Image
+    - name: Upload kernel and modules
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-image
-        path: ${{ env.OUT_DIR }}/arch/arm64/boot/Image
-        retention-days: 7
-        
+        name: compiled-kernel
+        path: artifacts/*

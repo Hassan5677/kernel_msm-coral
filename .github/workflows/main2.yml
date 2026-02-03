@@ -16,7 +16,7 @@ jobs:
       KBUILD_BUILD_USER: "@ravindu644"
     
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -38,20 +38,24 @@ jobs:
 
       - name: Setup Toolchains (pkm774 tools)
         run: |
+          # Clean up any existing directory to prevent git clone errors
+          rm -rf tools
+          
           # Clone the specific tools repository
           git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
           
-          # Set paths to the environment for subsequent steps
-          TOOLS_DIR=$(pwd)/tools
+          # Define absolute paths
+          TOOLS_DIR="$(pwd)/tools"
           CLANG_DIR="$TOOLS_DIR/clang/host/linux-x86/clang-r416183b"
           GCC64_DIR="$TOOLS_DIR/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
           GCC32_DIR="$TOOLS_DIR/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
           
+          # Set paths for the shell environment
           echo "CLANG_BIN=$CLANG_DIR/bin" >> $GITHUB_ENV
           echo "PATH=$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
           
-          # Cross Compile Prefixes
+          # Set Cross-Compiler Prefixes
           echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
 
@@ -59,6 +63,7 @@ jobs:
         run: |
           mkdir -p out build
           
+          # Define build arguments
           BUILD_OPTIONS=(
             ARCH=arm64
             O=out
@@ -79,15 +84,21 @@ jobs:
             HOSTCXX=clang++
           )
 
-          # Config and Build
+          # Configure with defconfig (adjust 'floral_defconfig' if your device uses a different name)
           make "${BUILD_OPTIONS[@]}" floral_defconfig
+          
+          # Start compilation
           make "${BUILD_OPTIONS[@]}" -j$(nproc) Image 2>&1 | tee build_output.log || {
             echo "FAILED" > status.txt
+            # Filter for easier debugging in the artifacts
             grep -Ei "error:|warning:|fatal" build_output.log > error_only.log
             exit 1
           }
           
-          cp out/arch/arm64/boot/Image build/
+          # Copy binary for upload
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image build/
+          fi
 
       - name: Upload Build Artifacts
         if: success()

@@ -14,6 +14,7 @@ jobs:
       KERNEL_ROOT: ${{ github.workspace }}
       ARCH: arm64
       KBUILD_BUILD_USER: "@ravindu644"
+      USE_CCACHE: 1
     
     steps:
       - name: Checkout repository
@@ -26,7 +27,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git device-tree-compiler lz4 xz-utils zlib1g-dev \
+            git git-lfs device-tree-compiler lz4 xz-utils zlib1g-dev \
             openjdk-17-jdk gcc g++ python3 python-is-python3 \
             p7zip-full android-sdk-libsparse-utils erofs-utils \
             flex bison gperf build-essential zip curl libc6-dev \
@@ -34,40 +35,50 @@ jobs:
             libgl1-mesa-dev make bc grep tofrodos python3-markdown \
             libxml2-utils xsltproc libtinfo6 cpio kmod openssl \
             libelf-dev pahole libssl-dev libarchive-tools zstd rsync \
-            wget libyaml-dev
+            wget libyaml-dev ccache
+
+      - name: Setup Ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-
 
       - name: Setup Toolchains (pkm774 tools)
         run: |
-          # Clean up any existing directory to prevent git clone errors
           rm -rf tools
-          
-          # Clone the specific tools repository
+          git lfs install
           git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
+          cd tools && git lfs pull && cd ..
           
-          # Define absolute paths
           TOOLS_DIR="$(pwd)/tools"
           CLANG_DIR="$TOOLS_DIR/clang/host/linux-x86/clang-r416183b"
           GCC64_DIR="$TOOLS_DIR/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
           GCC32_DIR="$TOOLS_DIR/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
           
-          # Set paths for the shell environment
+          # Verify binaries
+          if [ ! -f "$CLANG_DIR/bin/ld.lld" ]; then
+            echo "ERROR: ld.lld still not found. LFS pull might have failed."
+            exit 1
+          fi
+          chmod +x $CLANG_DIR/bin/* $GCC64_DIR/bin/* $GCC32_DIR/bin/*
+          
           echo "CLANG_BIN=$CLANG_DIR/bin" >> $GITHUB_ENV
           echo "PATH=$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          
-          # Set Cross-Compiler Prefixes
           echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
           mkdir -p out build
+          ccache -M 5G # Set cache size to 5GB
           
-          # Define build arguments
           BUILD_OPTIONS=(
             ARCH=arm64
             O=out
-            CC=clang
+            CC="ccache clang"
             LLVM=1
             LLVM_IAS=1
             CROSS_COMPILE="${{ env.CROSS_COMPILE }}"
@@ -80,22 +91,20 @@ jobs:
             OBJCOPY="${{ env.CLANG_BIN }}/llvm-objcopy"
             OBJDUMP="${{ env.CLANG_BIN }}/llvm-objdump"
             READELF="${{ env.CLANG_BIN }}/llvm-readelf"
-            HOSTCC=clang
-            HOSTCXX=clang++
+            HOSTCC="ccache clang"
+            HOSTCXX="ccache clang++"
           )
 
-          # Configure with defconfig (adjust 'floral_defconfig' if your device uses a different name)
           make "${BUILD_OPTIONS[@]}" floral_defconfig
-          
-          # Start compilation
           make "${BUILD_OPTIONS[@]}" -j$(nproc) Image 2>&1 | tee build_output.log || {
             echo "FAILED" > status.txt
-            # Filter for easier debugging in the artifacts
             grep -Ei "error:|warning:|fatal" build_output.log > error_only.log
             exit 1
           }
           
-          # Copy binary for upload
+          # Show cache stats to see effectiveness
+          ccache -s
+
           if [ -f "out/arch/arm64/boot/Image" ]; then
             cp out/arch/arm64/boot/Image build/
           fi

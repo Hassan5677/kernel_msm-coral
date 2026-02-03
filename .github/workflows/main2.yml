@@ -16,7 +16,7 @@ jobs:
       KBUILD_BUILD_USER: "@ravindu644"
     
     steps:
-      - name: Checkout repository
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -36,36 +36,28 @@ jobs:
             libelf-dev pahole libssl-dev libarchive-tools zstd rsync \
             wget libyaml-dev
 
-      - name: Setup Toolchains (Neutron & GCC)
+      - name: Setup Toolchains (pkm774 tools)
         run: |
-          mkdir -p ~/toolchains/neutron-clang ~/toolchains/gcc64 ~/toolchains/gcc32
+          # Clone the specific tools repository
+          git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
           
-          # Setup Neutron-Clang
-          cd ~/toolchains/neutron-clang
-          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
-          chmod +x antman && ./antman -S && ./antman --patch=glibc
+          # Set paths to the environment for subsequent steps
+          TOOLS_DIR=$(pwd)/tools
+          CLANG_DIR="$TOOLS_DIR/clang/host/linux-x86/clang-r416183b"
+          GCC64_DIR="$TOOLS_DIR/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+          GCC32_DIR="$TOOLS_DIR/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
           
-          # Setup GCC 64-bit
-          cd ~/toolchains/gcc64
-          curl -LO "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz --strip-components=1
+          echo "CLANG_BIN=$CLANG_DIR/bin" >> $GITHUB_ENV
+          echo "PATH=$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
           
-          # Setup GCC 32-bit (Required for VDSO/Compat)
-          cd ~/toolchains/gcc32
-          curl -LO "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz"
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz --strip-components=1
-
-      - name: Set environment variables
-        run: |
-          echo "NEUTRON_PATH=$HOME/toolchains/neutron-clang/bin" >> $GITHUB_ENV
-          echo "PATH=$HOME/toolchains/neutron-clang/bin:$HOME/toolchains/gcc64/bin:$HOME/toolchains/gcc32/bin:$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$HOME/toolchains/gcc64/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=$HOME/toolchains/gcc32/bin/arm-none-linux-gnueabihf-" >> $GITHUB_ENV
+          # Cross Compile Prefixes
+          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
           mkdir -p out build
-          NEUTRON_BIN="$HOME/toolchains/neutron-clang/bin"
           
           BUILD_OPTIONS=(
             ARCH=arm64
@@ -76,18 +68,18 @@ jobs:
             CROSS_COMPILE="${{ env.CROSS_COMPILE }}"
             CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}"
             CLANG_TRIPLE=aarch64-linux-gnu-
-            AR="$NEUTRON_BIN/llvm-ar"
-            NM="$NEUTRON_BIN/llvm-nm"
-            LD="$NEUTRON_BIN/ld.lld"
-            STRIP="$NEUTRON_BIN/llvm-strip"
-            OBJCOPY="$NEUTRON_BIN/llvm-objcopy"
-            OBJDUMP="$NEUTRON_BIN/llvm-objdump"
-            READELF="$NEUTRON_BIN/llvm-readelf"
+            AR="${{ env.CLANG_BIN }}/llvm-ar"
+            NM="${{ env.CLANG_BIN }}/llvm-nm"
+            LD="${{ env.CLANG_BIN }}/ld.lld"
+            STRIP="${{ env.CLANG_BIN }}/llvm-strip"
+            OBJCOPY="${{ env.CLANG_BIN }}/llvm-objcopy"
+            OBJDUMP="${{ env.CLANG_BIN }}/llvm-objdump"
+            READELF="${{ env.CLANG_BIN }}/llvm-readelf"
             HOSTCC=clang
             HOSTCXX=clang++
           )
 
-          # Config and Build with log redirection
+          # Config and Build
           make "${BUILD_OPTIONS[@]}" floral_defconfig
           make "${BUILD_OPTIONS[@]}" -j$(nproc) Image 2>&1 | tee build_output.log || {
             echo "FAILED" > status.txt

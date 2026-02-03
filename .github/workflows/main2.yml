@@ -16,7 +16,7 @@ jobs:
       KBUILD_BUILD_USER: "@ravindu644"
     
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -24,137 +24,90 @@ jobs:
 
       - name: Install dependencies
         run: |
-          echo -e "\n[INFO]: Installing dependencies...\n"
           sudo apt-get update
           sudo apt-get install -y \
             git device-tree-compiler lz4 xz-utils zlib1g-dev \
             openjdk-17-jdk gcc g++ python3 python-is-python3 \
             p7zip-full android-sdk-libsparse-utils erofs-utils \
-            default-jdk git gnupg flex bison gperf build-essential \
-            zip curl libc6-dev libncurses-dev libx11-dev \
-            libreadline-dev libgl1 libgl1-mesa-dev python3 \
-            make sudo bc grep tofrodos python3-markdown \
-            libxml2-utils xsltproc zlib1g-dev libc6-dev \
-            libtinfo6 make cpio kmod openssl libelf-dev \
-            pahole libssl-dev libarchive-tools zstd rsync \
+            flex bison gperf build-essential zip curl libc6-dev \
+            libncurses-dev libx11-dev libreadline-dev libgl1 \
+            libgl1-mesa-dev make bc grep tofrodos python3-markdown \
+            libxml2-utils xsltproc libtinfo6 cpio kmod openssl \
+            libelf-dev pahole libssl-dev libarchive-tools zstd rsync \
             wget libyaml-dev
-          
-          # Install libtinfo5 for older compatibility
-          wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb || \
-          wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.4-1_amd64.deb || \
-          wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb
-          sudo dpkg -i libtinfo5_*.deb || true
-          
-          echo -e "\n[INFO]: Dependencies installed successfully!\n"
 
-      - name: Cache Neutron-Clang toolchain
-        id: cache-neutron
-        uses: actions/cache@v4
-        with:
-          path: ~/toolchains/neutron-clang
-          key: ${{ runner.os }}-neutron-clang-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-neutron-clang-
-
-      - name: Download and setup Neutron-Clang
-        if: steps.cache-neutron.outputs.cache-hit != 'true'
+      - name: Setup Toolchains (Neutron & GCC)
         run: |
-          echo -e "\n[INFO] Setting up Neutron-Clang Toolchain...\n"
-          mkdir -p ~/toolchains/neutron-clang
+          mkdir -p ~/toolchains/neutron-clang ~/toolchains/gcc64 ~/toolchains/gcc32
+          
+          # Setup Neutron-Clang
           cd ~/toolchains/neutron-clang
           curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
-          chmod +x antman
-          bash antman -S
-          bash antman --patch=glibc
-          cd $KERNEL_ROOT
-
-      - name: Cache GCC Toolchain
-        id: cache-gcc
-        uses: actions/cache@v4
-        with:
-          path: ~/toolchains/gcc
-          key: ${{ runner.os }}-gcc-arm-14.2
-
-      - name: Download and setup GCC
-        if: steps.cache-gcc.outputs.cache-hit != 'true'
-        run: |
-          echo -e "\n[INFO] Setting up ARM GNU Toolchain...\n"
-          mkdir -p ~/toolchains/gcc
-          cd ~/toolchains/gcc
+          chmod +x antman && ./antman -S && ./antman --patch=glibc
+          
+          # Setup GCC 64-bit
+          cd ~/toolchains/gcc64
           curl -LO "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
-          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          cd $KERNEL_ROOT
+          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz --strip-components=1
+          
+          # Setup GCC 32-bit (Required for VDSO/Compat)
+          cd ~/toolchains/gcc32
+          curl -LO "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz"
+          tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz --strip-components=1
 
       - name: Set environment variables
         run: |
-          NEUTRON_PATH="$HOME/toolchains/neutron-clang/bin"
-          echo "NEUTRON_PATH=$NEUTRON_PATH" >> $GITHUB_ENV
-          echo "PATH=$NEUTRON_PATH:$PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$HOME/toolchains/neutron-clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "BUILD_CROSS_COMPILE=$HOME/toolchains/gcc/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
-          echo "BUILD_CC=$NEUTRON_PATH/clang" >> $GITHUB_ENV
-
-      - name: Create output directories
-        run: |
-          mkdir -p out build
+          echo "NEUTRON_PATH=$HOME/toolchains/neutron-clang/bin" >> $GITHUB_ENV
+          echo "PATH=$HOME/toolchains/neutron-clang/bin:$HOME/toolchains/gcc64/bin:$HOME/toolchains/gcc32/bin:$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$HOME/toolchains/gcc64/bin/aarch64-none-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=$HOME/toolchains/gcc32/bin/arm-none-linux-gnueabihf-" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
-          echo -e "\n[INFO]: BUILD STARTED..!\n"
+          mkdir -p out build
+          NEUTRON_BIN="$HOME/toolchains/neutron-clang/bin"
           
-          # Set build options
           BUILD_OPTIONS=(
-            -C "$KERNEL_ROOT"
-            O="$KERNEL_ROOT/out"
-            -j$(nproc)
             ARCH=arm64
-            CROSS_COMPILE="${BUILD_CROSS_COMPILE}"
-            CC="${BUILD_CC}"
-            CLANG_TRIPLE=aarch64-linux-gnu-
+            O=out
+            CC=clang
             LLVM=1
             LLVM_IAS=1
-            AR="${NEUTRON_PATH}/llvm-ar"
-            NM="${NEUTRON_PATH}/llvm-nm"
-            LD="${NEUTRON_PATH}/ld.lld"
-            STRIP="${NEUTRON_PATH}/llvm-strip"
-            OBJCOPY="${NEUTRON_PATH}/llvm-objcopy"
-            OBJDUMP="${NEUTRON_PATH}/llvm-objdump"
-            READELF="${NEUTRON_PATH}/llvm-readelf"
-            HOSTCC="${NEUTRON_PATH}/clang"
-            HOSTCXX="${NEUTRON_PATH}/clang++"
+            CROSS_COMPILE="${{ env.CROSS_COMPILE }}"
+            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}"
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            AR="$NEUTRON_BIN/llvm-ar"
+            NM="$NEUTRON_BIN/llvm-nm"
+            LD="$NEUTRON_BIN/ld.lld"
+            STRIP="$NEUTRON_BIN/llvm-strip"
+            OBJCOPY="$NEUTRON_BIN/llvm-objcopy"
+            OBJDUMP="$NEUTRON_BIN/llvm-objdump"
+            READELF="$NEUTRON_BIN/llvm-readelf"
+            HOSTCC=clang
+            HOSTCXX=clang++
           )
-          
-          # Make default configuration with your defconfig
+
+          # Config and Build with log redirection
           make "${BUILD_OPTIONS[@]}" floral_defconfig
+          make "${BUILD_OPTIONS[@]}" -j$(nproc) Image 2>&1 | tee build_output.log || {
+            echo "FAILED" > status.txt
+            grep -Ei "error:|warning:|fatal" build_output.log > error_only.log
+            exit 1
+          }
           
-          # Note: menuconfig is skipped in CI as it's interactive
-          # For custom configs, modify floral_defconfig or create a patch
-          
-          # Build the kernel
-          make "${BUILD_OPTIONS[@]}" Image || { echo "Build failed!"; exit 1; }
-          
-          # Copy the built kernel
-          cp "$KERNEL_ROOT/out/arch/arm64/boot/Image" "$KERNEL_ROOT/build/"
-          
-          echo -e "\n[INFO]: BUILD FINISHED..!\n"
-          echo "Build artifacts:"
-          ls -lh "$KERNEL_ROOT/build/"
+          cp out/arch/arm64/boot/Image build/
 
       - name: Upload Build Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-image
-          path: |
-            build/Image
-            out/.config
-            out/arch/arm64/boot/
-          if-no-files-found: error
-          retention-days: 7
+          path: build/Image
 
-      - name: Upload Build Logs (on failure)
+      - name: Upload Error Logs Only
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
-          path: out/
+          name: error-logs
+          path: error_only.log
           retention-days: 3

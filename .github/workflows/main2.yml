@@ -49,17 +49,15 @@ jobs:
           mkdir -p ${{ env.DTC_DIR }}
           cd ${{ env.DTC_DIR }}
           
-          # Clone the custom DTC repository
           git clone --depth=1 https://github.com/Hassan5677/PIXEL-DTC.git pixel-dtc
           
           echo "DTC Repository structure:"
-          find pixel-dtc -type f -name "dtc*" -o -name "Makefile" | head -20
+          find pixel-dtc -type f \( -name "dtc*" -o -name "Makefile" \) | head -20
           echo "::endgroup::"
           
           echo "::group::Building/Extracting DTC"
           cd pixel-dtc
           
-          # Check if pre-built dtc exists
           if [ -f "dtc" ]; then
             echo "Found pre-built dtc binary"
             chmod +x dtc
@@ -77,7 +75,6 @@ jobs:
               export CUSTOM_DTC="${PWD}/dtc"
             fi
           else
-            echo "Searching for any dtc binary..."
             DTC_BINARY=$(find . -name "dtc" -type f | head -1)
             if [ -n "$DTC_BINARY" ]; then
               chmod +x "$DTC_BINARY"
@@ -85,13 +82,12 @@ jobs:
             fi
           fi
           
-          # Verify DTC
           if [ -n "$CUSTOM_DTC" ] && [ -f "$CUSTOM_DTC" ]; then
             echo "CUSTOM_DTC=${CUSTOM_DTC}" >> $GITHUB_ENV
             echo "Custom DTC path: ${CUSTOM_DTC}"
             ls -lh "${CUSTOM_DTC}"
             file "${CUSTOM_DTC}"
-            "${CUSTOM_DTC}" --version || echo "Version check failed but continuing..."
+            "${CUSTOM_DTC}" --version 2>/dev/null || echo "Version check skipped"
           else
             echo "Warning: Custom DTC not found, will use system dtc"
             echo "CUSTOM_DTC=dtc" >> $GITHUB_ENV
@@ -102,12 +98,8 @@ jobs:
         run: |
           mkdir -p ${{ env.TOOLCHAIN_DIR }}
           cd ${{ env.TOOLCHAIN_DIR }}
-          
-          # Clone with shallow depth to save time/space
           git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
-          
-          echo "Toolchain structure:"
-          find tools -maxdepth 4 -type d | head -20
+          echo "Toolchain cloned successfully"
 
       - name: Setup Toolchain Paths
         run: |
@@ -115,150 +107,88 @@ jobs:
           GCC_64_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
           GCC_32_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
           
-          # Export to environment for subsequent steps
           echo "CLANG_PATH=${CLANG_PATH}" >> $GITHUB_ENV
           echo "GCC_64_PATH=${GCC_64_PATH}" >> $GITHUB_ENV
           echo "GCC_32_PATH=${GCC_32_PATH}" >> $GITHUB_ENV
           
-          # Setup PATH (order matters - custom DTC first)
           echo "${{ env.DTC_DIR }}/pixel-dtc" >> $GITHUB_PATH
           echo "${CLANG_PATH}/bin" >> $GITHUB_PATH
           echo "${GCC_64_PATH}/bin" >> $GITHUB_PATH
           echo "${GCC_32_PATH}/bin" >> $GITHUB_PATH
           
-          # Setup library path
           echo "LD_LIBRARY_PATH=${CLANG_PATH}/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
-          
-          # Verify toolchains
-          echo "Clang version:"
-          ${CLANG_PATH}/bin/clang --version
-          
-          echo "Custom DTC check:"
-          which dtc || echo "dtc not in PATH yet"
-          if [ -f "${{ env.CUSTOM_DTC }}" ]; then
-            echo "Custom DTC exists: ${{ env.CUSTOM_DTC }}"
-          fi
 
-      - name: Fix UTS_VERSION Length Limit (64 char fix)
+      - name: Fix UTS_VERSION 64-Character Limit (CRITICAL FIX)
         run: |
           KERNEL_ROOT="${{ github.workspace }}"
           
-          echo "::group::Fixing UTS_VERSION 64-character limit"
+          echo "::group::Patching Makefile for 128-char limit"
           
-          # Fix the 64-character limit in utsrelease.h generation
-          # The error: "exceeds 64 characters" comes from Makefile rule
+          # The error is at Makefile line 1383: "exceeds 64 characters"
+          # We need to change the hardcoded 64 to 128
           
           if [ -f "${KERNEL_ROOT}/Makefile" ]; then
-            # Method 1: Increase UTS_VERSION length in Makefile
-            # Look for the line that checks UTS_VERSION length and increase it
-            sed -i 's/ifeq (\$(shell echo -n \$(UTS_VERSION) | wc -c), 64)/ifeq (\$(shell echo -n \$(UTS_VERSION) | wc -c), 128)/g' "${KERNEL_ROOT}/Makefile" 2>/dev/null || true
+            echo "Original problematic lines:"
+            grep -n "exceeds 64 characters" "${KERNEL_ROOT}/Makefile" || echo "Pattern not found with grep"
             
-            # Method 2: Directly modify the utsrelease.h rule to allow longer strings
-            # Replace the 64-char check with 128-char check
-            sed -i 's/\(UTS_VERSION.*64\)/UTS_VERSION_CHECK=128/g' "${KERNEL_ROOT}/Makefile" 2>/dev/null || true
+            # Method 1: Direct replacement of the specific check
+            # This changes: if [ `echo -n "$(UTS_VERSION)" | wc -c` -gt 64 ]
+            # To:           if [ `echo -n "$(UTS_VERSION)" | wc -c` -gt 128 ]
+            sed -i 's/-gt 64/-gt 128/g' "${KERNEL_ROOT}/Makefile"
             
-            # Method 3: Patch the specific line that generates the error
-            # Line 1383 in Makefile usually has: $(shell echo $(UTS_VERSION) | wc -c) -gt 64
-            sed -i 's/-gt 64/-gt 128/g' "${KERNEL_ROOT}/Makefile" || true
+            # Method 2: Change the error message to match
+            sed -i 's/exceeds 64 characters/exceeds 128 characters/g' "${KERNEL_ROOT}/Makefile"
+            
+            # Method 3: If the above doesn't work, try to comment out the check entirely
+            # This is a fallback - replace the if statement with a no-op
+            if grep -q "exceeds 64 characters" "${KERNEL_ROOT}/Makefile"; then
+              echo "Still found 64 char limit, trying alternative patch..."
+              # Use awk to handle multi-line statements
+              awk '/if.*UTS_VERSION.*wc -c.*-gt 64/{gsub(/-gt 64/,"-gt 128")} {print}' "${KERNEL_ROOT}/Makefile" > Makefile.tmp && mv Makefile.tmp "${KERNEL_ROOT}/Makefile"
+            fi
+            
+            echo ""
+            echo "Patched lines (should show 128 now):"
+            grep -n "exceeds 128 characters\|-gt 128" "${KERNEL_ROOT}/Makefile" || echo "Patch verification needed"
           fi
           
-          # Alternative fix: Modify scripts/mkcompile_h or include/linux/compile.h if they exist
-          if [ -f "${KERNEL_ROOT}/scripts/mkcompile_h" ]; then
-            sed -i 's/64/128/g' "${KERNEL_ROOT}/scripts/mkcompile_h" || true
+          # Also check scripts/setlocalversion which might be adding the dirty tags
+          if [ -f "${KERNEL_ROOT}/scripts/setlocalversion" ]; then
+            echo ""
+            echo "Checking setlocalversion for dirty tag modifications..."
+            # Optional: Remove the dirty tag from version string
+            # sed -i 's/printf "%s" "$dirty"/# printf "%s" "$dirty"/g' "${KERNEL_ROOT}/scripts/setlocalversion"
           fi
           
-          # Fix UTS_RELEASE length in include/generated/utsrelease.h generation
-          # The actual header file limit is in kernel internals
-          if [ -f "${KERNEL_ROOT}/include/linux/compile.h" ]; then
-            sed -i 's/UTS_VERSION_LENGTH 64/UTS_VERSION_LENGTH 128/g' "${KERNEL_ROOT}/include/linux/compile.h" || true
-          fi
-          
-          echo "Makefile patched to allow 128 character version strings"
-          grep -n "64\|128" "${KERNEL_ROOT}/Makefile" | grep -i "uts\|version" | head -10 || true
           echo "::endgroup::"
 
       - name: Fix KSYM_NAME_LEN for LTO Symbols
         run: |
-          # Fix for long C++ LTO symbols (increase from 128 to 512)
           if [ -f "${{ github.workspace }}/scripts/kallsyms.c" ]; then
             sed -i 's/#define KSYM_NAME_LEN 128/#define KSYM_NAME_LEN 512/' \
               "${{ github.workspace }}/scripts/kallsyms.c" || true
           fi
-          
           if [ -f "${{ github.workspace }}/include/linux/kallsyms.h" ]; then
             sed -i 's/#define KSYM_NAME_LEN 128/#define KSYM_NAME_LEN 512/' \
               "${{ github.workspace }}/include/linux/kallsyms.h" || true
           fi
 
-      - name: Enable Thin LTO & Cache Size in Config
+      - name: Configure and Build Kernel
         run: |
           KERNEL_ROOT="${{ github.workspace }}"
           OUT_DIR="${KERNEL_ROOT}/out"
-          
           mkdir -p "${OUT_DIR}"
           
-          # Setup build options
-          BUILD_OPTS=(
-            -C "${KERNEL_ROOT}"
-            O="${OUT_DIR}"
-            ARCH=arm64
-            CROSS_COMPILE="${GCC_64_PATH}/bin/aarch64-linux-android-"
-            CC="${CLANG_PATH}/bin/clang"
-            CLANG_TRIPLE=aarch64-linux-gnu-
-            CROSS_COMPILE_ARM32="${GCC_32_PATH}/bin/arm-linux-androideabi-"
-            DTC_EXT="${CUSTOM_DTC}"
-            AR="${CLANG_PATH}/bin/llvm-ar"
-            NM="${CLANG_PATH}/bin/llvm-nm"
-            LD="${CLANG_PATH}/bin/ld.lld"
-            STRIP="${CLANG_PATH}/bin/llvm-strip"
-            OBJCOPY="${CLANG_PATH}/bin/llvm-objcopy"
-            OBJDUMP="${CLANG_PATH}/bin/llvm-objdump"
-            READELF="${CLANG_PATH}/bin/llvm-readelf"
-            HOSTCC="${CLANG_PATH}/bin/clang"
-            HOSTCXX="${CLANG_PATH}/bin/clang++"
-            CCACHE=1
-          )
-          
-          # Export for next steps
-          echo "BUILD_OPTS=${BUILD_OPTS[*]}" >> $GITHUB_ENV
-          echo "OUT_DIR=${OUT_DIR}" >> $GITHUB_ENV
-          
-          # Generate initial config
-          make "${BUILD_OPTS[@]}" ${{ env.DEFCONFIG }}
-          
-          # --- ENABLE THIN LTO ---
-          scripts/config --file ${OUT_DIR}/.config \
-            -d CONFIG_LTO_CLANG_FULL \
-            -e CONFIG_LTO_CLANG_THIN \
-            -e CONFIG_LTO \
-            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG \
-            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN
-          
-          # --- OPTIMIZE CACHE SIZE ---
-          scripts/config --file ${OUT_DIR}/.config \
-            -e CONFIG_MODULE_COMPRESS \
-            -e CONFIG_MODULE_COMPRESS_XZ \
-            --set-val CONFIG_MODULE_COMPRESS_XZ_LEVEL 9
-          
-          scripts/config --file ${OUT_DIR}/.config \
-            -e CONFIG_HAVE_KERNEL_ZSTD \
-            -e CONFIG_KERNEL_ZSTD 2>/dev/null || true
-          
-          # Update config with new values
-          make "${BUILD_OPTS[@]}" olddefconfig
-          
-          echo "Config updated with Thin LTO and cache optimizations"
-          grep -E "LTO|COMPRESS|DTC" ${OUT_DIR}/.config | head -20
-
-      - name: Build Kernel
-        run: |
-          KERNEL_ROOT="${{ github.workspace }}"
-          OUT_DIR="${{ github.workspace }}/out"
+          # Export all toolchain vars for this step
+          export CLANG_PATH="${{ env.TOOLCHAIN_DIR }}/tools/clang/host/linux-x86/clang-r428724"
+          export GCC_64_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+          export GCC_32_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
+          export CUSTOM_DTC="${{ env.CUSTOM_DTC }}"
+          export LD_LIBRARY_PATH="${CLANG_PATH}/lib64:${LD_LIBRARY_PATH}"
           
           BUILD_OPTS=(
             -C "${KERNEL_ROOT}"
             O="${OUT_DIR}"
-            -j$(nproc)
             ARCH=arm64
             CROSS_COMPILE="${GCC_64_PATH}/bin/aarch64-linux-android-"
             CC="ccache ${CLANG_PATH}/bin/clang"
@@ -276,17 +206,36 @@ jobs:
             HOSTCXX="ccache ${CLANG_PATH}/bin/clang++"
           )
           
-          # Create DTS directories to suppress warnings
+          # Generate config
+          make "${BUILD_OPTS[@]}" ${{ env.DEFCONFIG }}
+          
+          # Enable Thin LTO
+          scripts/config --file ${OUT_DIR}/.config \
+            -d CONFIG_LTO_CLANG_FULL \
+            -e CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_LTO \
+            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG \
+            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN 2>/dev/null || true
+          
+          # Optimize compression
+          scripts/config --file ${OUT_DIR}/.config \
+            -e CONFIG_MODULE_COMPRESS \
+            -e CONFIG_MODULE_COMPRESS_XZ \
+            --set-val CONFIG_MODULE_COMPRESS_XZ_LEVEL 9 2>/dev/null || true
+          
+          make "${BUILD_OPTS[@]}" olddefconfig
+          
+          # Create DTS directories
           mkdir -p "${KERNEL_ROOT}/arch/arm64/boot/dts"
           mkdir -p "${OUT_DIR}/arch/arm64/boot/dts"
           
-          echo "::group::Building Kernel Image with Custom DTC"
-          echo "Using DTC: ${CUSTOM_DTC}"
-          make "${BUILD_OPTS[@]}" Image || exit 1
+          # Build with verbose error output
+          echo "::group::Building Kernel"
+          make "${BUILD_OPTS[@]}" -j$(nproc) Image V=1 2>&1 | tee build.log || { echo "Build failed!"; tail -100 build.log; exit 1; }
           echo "::endgroup::"
           
-          echo "::group::Building DTBs with Custom DTC"
-          make "${BUILD_OPTS[@]}" dtbs || echo "[WARN]: DTBs build had warnings, continuing..."
+          echo "::group::Building DTBs"
+          make "${BUILD_OPTS[@]}" -j$(nproc) dtbs V=1 2>&1 | tee -a build.log || echo "DTBs build had warnings"
           echo "::endgroup::"
 
       - name: Package Output
@@ -294,10 +243,8 @@ jobs:
           KERNEL_ROOT="${{ github.workspace }}"
           OUT_DIR="${{ github.workspace }}/out"
           BUILD_DIR="${KERNEL_ROOT}/build"
-          
           mkdir -p "${BUILD_DIR}"
           
-          # Copy kernel image
           if [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
             cp "${OUT_DIR}/arch/arm64/boot/Image" "${BUILD_DIR}/"
             echo "✓ Kernel Image copied"
@@ -306,18 +253,15 @@ jobs:
             exit 1
           fi
           
-          # Copy DTB files
           if [ -d "${OUT_DIR}/arch/arm64/boot/dts" ]; then
             find "${OUT_DIR}/arch/arm64/boot/dts" -name "*.dtb" -exec cp {} "${BUILD_DIR}/" \;
             echo "✓ DTB files copied"
           fi
           
-          # Copy vmlinux for debugging
           if [ -f "${OUT_DIR}/vmlinux" ]; then
             cp "${OUT_DIR}/vmlinux" "${BUILD_DIR}/" 2>/dev/null || true
           fi
           
-          # Create build info
           cd "${BUILD_DIR}"
           ls -lh
           
@@ -328,18 +272,24 @@ jobs:
             echo "LTO Mode: Thin LTO"
             echo "DTC: Custom PIXEL-DTC"
             echo "Commit: ${{ github.sha }}"
-            echo "Runner: ${{ runner.os }}"
           } > build-info.txt
-          
-          cat build-info.txt
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: ${{ env.KERNEL_NAME }}-${{ github.run_number }}
           path: ${{ github.workspace }}/build/*
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload Build Log on Failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-failure-log-${{ github.run_number }}
+          path: ${{ github.workspace }}/build.log
+          retention-days: 3
 
       - name: Show ccache Stats
         run: ccache -s

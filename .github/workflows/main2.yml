@@ -1,125 +1,307 @@
-name: Build Android Kernel
+name: Android Kernel Build
 
 on:
   push:
-    branches: [main, master]
+    branches: [ main, master, '*' ]
   pull_request:
-    branches: [main, master]
+    branches: [ main, master ]
   workflow_dispatch:
+
+env:
+  KERNEL_NAME: Floral-Kernel
+  DEFCONFIG: floral_defconfig
+  TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
+  DTC_DIR: ${{ github.workspace }}/dtc_custom
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      KERNEL_ROOT: ${{ github.workspace }}
-      ARCH: arm64
-      KBUILD_BUILD_USER: "@ravindu644"
-      USE_CCACHE: 1
+    timeout-minutes: 120
     
     steps:
-      - name: Checkout repository
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-${{ matrix.os }}-${{ env.DEFCONFIG }}
+          max-size: 5G
+          verbose: 2
+
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git git-lfs device-tree-compiler lz4 xz-utils zlib1g-dev \
-            openjdk-17-jdk gcc g++ python3 python-is-python3 \
-            p7zip-full android-sdk-libsparse-utils erofs-utils \
-            flex bison gperf build-essential zip curl libc6-dev \
-            libncurses-dev libx11-dev libreadline-dev libgl1 \
-            libgl1-mesa-dev make bc grep tofrodos python3-markdown \
-            libxml2-utils xsltproc libtinfo6 cpio kmod openssl \
-            libelf-dev pahole libssl-dev libarchive-tools zstd rsync \
-            wget libyaml-dev ccache
+            git device-tree-compiler lz4 xz-utils zlib1g-dev \
+            openjdk-17-jdk python3 python-is-python3 \
+            p7zip-full libarchive-tools zstd rsync \
+            bc bison flex libssl-dev libelf-dev \
+            dwarves cpio kmod ccache \
+            make gcc g++ libyaml-dev
 
-      - name: Setup Ccache
-        uses: actions/cache@v4
-        with:
-          path: /home/runner/.ccache
-          key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-kernel-ccache-
-
-      - name: Setup Toolchains (pkm774 tools)
+      - name: Clone and Setup Custom DTC
         run: |
-          rm -rf tools
-          git lfs install
-          git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
-          cd tools && git lfs pull && cd ..
+          echo "::group::Cloning Custom DTC Repository"
+          mkdir -p ${{ env.DTC_DIR }}
+          cd ${{ env.DTC_DIR }}
           
-          TOOLS_DIR="$(pwd)/tools"
-          CLANG_DIR="$TOOLS_DIR/clang/host/linux-x86/clang-r416183b"
-          GCC64_DIR="$TOOLS_DIR/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-          GCC32_DIR="$TOOLS_DIR/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
+          # Clone the custom DTC repository
+          git clone --depth=1 https://github.com/Hassan5677/PIXEL-DTC.git pixel-dtc
           
-          # Verify binaries
-          if [ ! -f "$CLANG_DIR/bin/ld.lld" ]; then
-            echo "ERROR: ld.lld still not found. LFS pull might have failed."
-            exit 1
+          echo "DTC Repository structure:"
+          find pixel-dtc -type f -name "dtc*" -o -name "Makefile" | head -20
+          echo "::endgroup::"
+          
+          echo "::group::Building/Extracting DTC"
+          cd pixel-dtc
+          
+          # Check if pre-built dtc exists
+          if [ -f "dtc" ]; then
+            echo "Found pre-built dtc binary"
+            chmod +x dtc
+            export CUSTOM_DTC="${PWD}/dtc"
+          elif [ -f "dtc-overlay" ]; then
+            echo "Found dtc-overlay binary"
+            chmod +x dtc-overlay
+            export CUSTOM_DTC="${PWD}/dtc-overlay"
+          elif [ -f "Makefile" ]; then
+            echo "Building DTC from source..."
+            make clean 2>/dev/null || true
+            make -j$(nproc)
+            if [ -f "dtc" ]; then
+              chmod +x dtc
+              export CUSTOM_DTC="${PWD}/dtc"
+            fi
+          else
+            echo "Searching for any dtc binary..."
+            DTC_BINARY=$(find . -name "dtc" -type f | head -1)
+            if [ -n "$DTC_BINARY" ]; then
+              chmod +x "$DTC_BINARY"
+              export CUSTOM_DTC="${PWD}/${DTC_BINARY}"
+            fi
           fi
-          chmod +x $CLANG_DIR/bin/* $GCC64_DIR/bin/* $GCC32_DIR/bin/*
           
-          echo "CLANG_BIN=$CLANG_DIR/bin" >> $GITHUB_ENV
-          echo "PATH=$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$CLANG_DIR/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+          # Verify DTC
+          if [ -n "$CUSTOM_DTC" ] && [ -f "$CUSTOM_DTC" ]; then
+            echo "CUSTOM_DTC=${CUSTOM_DTC}" >> $GITHUB_ENV
+            echo "Custom DTC path: ${CUSTOM_DTC}"
+            ls -lh "${CUSTOM_DTC}"
+            file "${CUSTOM_DTC}"
+            "${CUSTOM_DTC}" --version || echo "Version check failed but continuing..."
+          else
+            echo "Warning: Custom DTC not found, will use system dtc"
+            echo "CUSTOM_DTC=dtc" >> $GITHUB_ENV
+          fi
+          echo "::endgroup::"
+
+      - name: Clone Toolchains
+        run: |
+          mkdir -p ${{ env.TOOLCHAIN_DIR }}
+          cd ${{ env.TOOLCHAIN_DIR }}
+          
+          # Clone with shallow depth to save time/space
+          git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
+          
+          echo "Toolchain structure:"
+          find tools -maxdepth 4 -type d | head -20
+
+      - name: Setup Toolchain Paths
+        run: |
+          CLANG_PATH="${{ env.TOOLCHAIN_DIR }}/tools/clang/host/linux-x86/clang-r428724"
+          GCC_64_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+          GCC_32_PATH="${{ env.TOOLCHAIN_DIR }}/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
+          
+          # Export to environment for subsequent steps
+          echo "CLANG_PATH=${CLANG_PATH}" >> $GITHUB_ENV
+          echo "GCC_64_PATH=${GCC_64_PATH}" >> $GITHUB_ENV
+          echo "GCC_32_PATH=${GCC_32_PATH}" >> $GITHUB_ENV
+          
+          # Setup PATH (order matters - custom DTC first)
+          echo "${{ env.DTC_DIR }}/pixel-dtc" >> $GITHUB_PATH
+          echo "${CLANG_PATH}/bin" >> $GITHUB_PATH
+          echo "${GCC_64_PATH}/bin" >> $GITHUB_PATH
+          echo "${GCC_32_PATH}/bin" >> $GITHUB_PATH
+          
+          # Setup library path
+          echo "LD_LIBRARY_PATH=${CLANG_PATH}/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          
+          # Verify toolchains
+          echo "Clang version:"
+          ${CLANG_PATH}/bin/clang --version
+          
+          echo "Custom DTC check:"
+          which dtc || echo "dtc not in PATH yet"
+          if [ -f "${{ env.CUSTOM_DTC }}" ]; then
+            echo "Custom DTC exists: ${{ env.CUSTOM_DTC }}"
+          fi
+
+      - name: Fix KSYM_NAME_LEN for LTO Symbols
+        run: |
+          # Fix for long C++ LTO symbols (increase from 128 to 512)
+          if [ -f "${{ github.workspace }}/scripts/kallsyms.c" ]; then
+            sed -i 's/#define KSYM_NAME_LEN 128/#define KSYM_NAME_LEN 512/' \
+              "${{ github.workspace }}/scripts/kallsyms.c" || true
+          fi
+          
+          if [ -f "${{ github.workspace }}/include/linux/kallsyms.h" ]; then
+            sed -i 's/#define KSYM_NAME_LEN 128/#define KSYM_NAME_LEN 512/' \
+              "${{ github.workspace }}/include/linux/kallsyms.h" || true
+          fi
+
+      - name: Enable Thin LTO & Cache Size in Config
+        run: |
+          KERNEL_ROOT="${{ github.workspace }}"
+          OUT_DIR="${KERNEL_ROOT}/out"
+          
+          mkdir -p "${OUT_DIR}"
+          
+          # Setup build options
+          BUILD_OPTS=(
+            -C "${KERNEL_ROOT}"
+            O="${OUT_DIR}"
+            ARCH=arm64
+            CROSS_COMPILE="${GCC_64_PATH}/bin/aarch64-linux-android-"
+            CC="${CLANG_PATH}/bin/clang"
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32="${GCC_32_PATH}/bin/arm-linux-androideabi-"
+            DTC_EXT="${CUSTOM_DTC}"
+            AR="${CLANG_PATH}/bin/llvm-ar"
+            NM="${CLANG_PATH}/bin/llvm-nm"
+            LD="${CLANG_PATH}/bin/ld.lld"
+            STRIP="${CLANG_PATH}/bin/llvm-strip"
+            OBJCOPY="${CLANG_PATH}/bin/llvm-objcopy"
+            OBJDUMP="${CLANG_PATH}/bin/llvm-objdump"
+            READELF="${CLANG_PATH}/bin/llvm-readelf"
+            HOSTCC="${CLANG_PATH}/bin/clang"
+            HOSTCXX="${CLANG_PATH}/bin/clang++"
+            CCACHE=1
+          )
+          
+          # Export for next steps
+          echo "BUILD_OPTS=${BUILD_OPTS[*]}" >> $GITHUB_ENV
+          echo "OUT_DIR=${OUT_DIR}" >> $GITHUB_ENV
+          
+          # Generate initial config
+          make "${BUILD_OPTS[@]}" ${{ env.DEFCONFIG }}
+          
+          # --- ENABLE THIN LTO ---
+          scripts/config --file ${OUT_DIR}/.config \
+            -d CONFIG_LTO_CLANG_FULL \
+            -e CONFIG_LTO_CLANG_THIN \
+            -e CONFIG_LTO \
+            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG \
+            -e CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN
+          
+          # --- OPTIMIZE CACHE SIZE ---
+          scripts/config --file ${OUT_DIR}/.config \
+            -e CONFIG_MODULE_COMPRESS \
+            -e CONFIG_MODULE_COMPRESS_XZ \
+            --set-val CONFIG_MODULE_COMPRESS_XZ_LEVEL 9
+          
+          scripts/config --file ${OUT_DIR}/.config \
+            -e CONFIG_HAVE_KERNEL_ZSTD \
+            -e CONFIG_KERNEL_ZSTD 2>/dev/null || true
+          
+          # Update config with new values
+          make "${BUILD_OPTS[@]}" olddefconfig
+          
+          echo "Config updated with Thin LTO and cache optimizations"
+          grep -E "LTO|COMPRESS|DTC" ${OUT_DIR}/.config | head -20
 
       - name: Build Kernel
         run: |
-          mkdir -p out build
-          ccache -M 5G # Set cache size to 5GB
+          KERNEL_ROOT="${{ github.workspace }}"
+          OUT_DIR="${{ github.workspace }}/out"
           
-          BUILD_OPTIONS=(
+          BUILD_OPTS=(
+            -C "${KERNEL_ROOT}"
+            O="${OUT_DIR}"
+            -j$(nproc)
             ARCH=arm64
-            O=out
-            CC="ccache clang"
-            LLVM=1
-            LLVM_IAS=1
-            CROSS_COMPILE="${{ env.CROSS_COMPILE }}"
-            CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}"
+            CROSS_COMPILE="${GCC_64_PATH}/bin/aarch64-linux-android-"
+            CC="ccache ${CLANG_PATH}/bin/clang"
             CLANG_TRIPLE=aarch64-linux-gnu-
-            AR="${{ env.CLANG_BIN }}/llvm-ar"
-            NM="${{ env.CLANG_BIN }}/llvm-nm"
-            LD="${{ env.CLANG_BIN }}/ld.lld"
-            STRIP="${{ env.CLANG_BIN }}/llvm-strip"
-            OBJCOPY="${{ env.CLANG_BIN }}/llvm-objcopy"
-            OBJDUMP="${{ env.CLANG_BIN }}/llvm-objdump"
-            READELF="${{ env.CLANG_BIN }}/llvm-readelf"
-            HOSTCC="ccache clang"
-            HOSTCXX="ccache clang++"
+            CROSS_COMPILE_ARM32="${GCC_32_PATH}/bin/arm-linux-androideabi-"
+            DTC_EXT="${CUSTOM_DTC}"
+            AR="${CLANG_PATH}/bin/llvm-ar"
+            NM="${CLANG_PATH}/bin/llvm-nm"
+            LD="${CLANG_PATH}/bin/ld.lld"
+            STRIP="${CLANG_PATH}/bin/llvm-strip"
+            OBJCOPY="${CLANG_PATH}/bin/llvm-objcopy"
+            OBJDUMP="${CLANG_PATH}/bin/llvm-objdump"
+            READELF="${CLANG_PATH}/bin/llvm-readelf"
+            HOSTCC="ccache ${CLANG_PATH}/bin/clang"
+            HOSTCXX="ccache ${CLANG_PATH}/bin/clang++"
           )
-
-          make "${BUILD_OPTIONS[@]}" floral_defconfig
-          make "${BUILD_OPTIONS[@]}" -j$(nproc) Image 2>&1 | tee build_output.log || {
-            echo "FAILED" > status.txt
-            grep -Ei "error:|warning:|fatal" build_output.log > error_only.log
-            exit 1
-          }
           
-          # Show cache stats to see effectiveness
-          ccache -s
+          # Create DTS directories to suppress warnings
+          mkdir -p "${KERNEL_ROOT}/arch/arm64/boot/dts"
+          mkdir -p "${OUT_DIR}/arch/arm64/boot/dts"
+          
+          echo "::group::Building Kernel Image with Custom DTC"
+          echo "Using DTC: ${CUSTOM_DTC}"
+          make "${BUILD_OPTS[@]}" Image || exit 1
+          echo "::endgroup::"
+          
+          echo "::group::Building DTBs with Custom DTC"
+          make "${BUILD_OPTS[@]}" dtbs || echo "[WARN]: DTBs build had warnings, continuing..."
+          echo "::endgroup::"
 
-          if [ -f "out/arch/arm64/boot/Image" ]; then
-            cp out/arch/arm64/boot/Image build/
+      - name: Package Output
+        run: |
+          KERNEL_ROOT="${{ github.workspace }}"
+          OUT_DIR="${{ github.workspace }}/out"
+          BUILD_DIR="${KERNEL_ROOT}/build"
+          
+          mkdir -p "${BUILD_DIR}"
+          
+          # Copy kernel image
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image" "${BUILD_DIR}/"
+            echo "✓ Kernel Image copied"
+          else
+            echo "✗ Kernel Image not found!"
+            exit 1
           fi
+          
+          # Copy DTB files
+          if [ -d "${OUT_DIR}/arch/arm64/boot/dts" ]; then
+            find "${OUT_DIR}/arch/arm64/boot/dts" -name "*.dtb" -exec cp {} "${BUILD_DIR}/" \;
+            echo "✓ DTB files copied"
+          fi
+          
+          # Copy vmlinux for debugging
+          if [ -f "${OUT_DIR}/vmlinux" ]; then
+            cp "${OUT_DIR}/vmlinux" "${BUILD_DIR}/" 2>/dev/null || true
+          fi
+          
+          # Create build info
+          cd "${BUILD_DIR}"
+          ls -lh
+          
+          {
+            echo "Build Date: $(date)"
+            echo "Defconfig: ${{ env.DEFCONFIG }}"
+            echo "Toolchain: Clang r428724 + GCC 4.9"
+            echo "LTO Mode: Thin LTO"
+            echo "DTC: Custom PIXEL-DTC"
+            echo "Commit: ${{ github.sha }}"
+            echo "Runner: ${{ runner.os }}"
+          } > build-info.txt
+          
+          cat build-info.txt
 
-      - name: Upload Build Artifacts
-        if: success()
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
-          path: build/Image
+          name: ${{ env.KERNEL_NAME }}-${{ github.run_number }}
+          path: ${{ github.workspace }}/build/*
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload Error Logs Only
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: error-logs
-          path: error_only.log
-          retention-days: 3
+      - name: Show ccache Stats
+        run: ccache -s

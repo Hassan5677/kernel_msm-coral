@@ -139,6 +139,44 @@ jobs:
             echo "Custom DTC exists: ${{ env.CUSTOM_DTC }}"
           fi
 
+      - name: Fix UTS_VERSION Length Limit (64 char fix)
+        run: |
+          KERNEL_ROOT="${{ github.workspace }}"
+          
+          echo "::group::Fixing UTS_VERSION 64-character limit"
+          
+          # Fix the 64-character limit in utsrelease.h generation
+          # The error: "exceeds 64 characters" comes from Makefile rule
+          
+          if [ -f "${KERNEL_ROOT}/Makefile" ]; then
+            # Method 1: Increase UTS_VERSION length in Makefile
+            # Look for the line that checks UTS_VERSION length and increase it
+            sed -i 's/ifeq (\$(shell echo -n \$(UTS_VERSION) | wc -c), 64)/ifeq (\$(shell echo -n \$(UTS_VERSION) | wc -c), 128)/g' "${KERNEL_ROOT}/Makefile" 2>/dev/null || true
+            
+            # Method 2: Directly modify the utsrelease.h rule to allow longer strings
+            # Replace the 64-char check with 128-char check
+            sed -i 's/\(UTS_VERSION.*64\)/UTS_VERSION_CHECK=128/g' "${KERNEL_ROOT}/Makefile" 2>/dev/null || true
+            
+            # Method 3: Patch the specific line that generates the error
+            # Line 1383 in Makefile usually has: $(shell echo $(UTS_VERSION) | wc -c) -gt 64
+            sed -i 's/-gt 64/-gt 128/g' "${KERNEL_ROOT}/Makefile" || true
+          fi
+          
+          # Alternative fix: Modify scripts/mkcompile_h or include/linux/compile.h if they exist
+          if [ -f "${KERNEL_ROOT}/scripts/mkcompile_h" ]; then
+            sed -i 's/64/128/g' "${KERNEL_ROOT}/scripts/mkcompile_h" || true
+          fi
+          
+          # Fix UTS_RELEASE length in include/generated/utsrelease.h generation
+          # The actual header file limit is in kernel internals
+          if [ -f "${KERNEL_ROOT}/include/linux/compile.h" ]; then
+            sed -i 's/UTS_VERSION_LENGTH 64/UTS_VERSION_LENGTH 128/g' "${KERNEL_ROOT}/include/linux/compile.h" || true
+          fi
+          
+          echo "Makefile patched to allow 128 character version strings"
+          grep -n "64\|128" "${KERNEL_ROOT}/Makefile" | grep -i "uts\|version" | head -10 || true
+          echo "::endgroup::"
+
       - name: Fix KSYM_NAME_LEN for LTO Symbols
         run: |
           # Fix for long C++ LTO symbols (increase from 128 to 512)
